@@ -1,0 +1,14 @@
+# data and generated outputs — never commit these
+data/
+outputs/
+*.zip
+
+# python
+__pycache__/
+*.pyc
+.venv/
+.ipynb_checkpoints/
+
+# models / caches
+*.pt
+*.npy
