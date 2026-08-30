@@ -11,4 +11,4 @@ __pycache__/
 
 # models / caches
 *.pt
-*.npy
+*.npyuidemo/

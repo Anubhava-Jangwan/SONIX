@@ -67,9 +67,26 @@ FLAC_DIR = {
 # Manifest building  (filename, path, label)   label: 1=spoof, 0=bonafide
 # ===========================================================================
 def build_manifest(split: str, args) -> list[tuple[str, str, int]]:
+    if getattr(args, "audio_dir", None):
+        return _build_manifest_dir(args.audio_dir)
     if split == "itw":
         return _build_manifest_itw(args.itw_root)
     return _build_manifest_asvspoof(split, args.data_root)
+
+
+def _build_manifest_dir(audio_dir):
+    """Extract EVERY .flac/.wav in a folder directly -- no protocol needed.
+    Labels are stored as a placeholder (0) and joined later, at scoring time, from
+    the dataset's own key file. Use this for ASVspoof 2021 DF and any dataset where
+    you just have a folder of audio. Filenames are saved in the shard sidecars, so
+    the labels can be matched back by filename afterwards."""
+    root = Path(audio_dir)
+    if not root.exists():
+        sys.exit(f"FATAL: --audio-dir not found: {root.resolve()}")
+    files = sorted(list(root.glob("*.flac")) + list(root.glob("*.wav")))
+    if not files:
+        sys.exit(f"FATAL: no .flac or .wav files directly in {root.resolve()}")
+    return [(f.stem, str(f), 0) for f in files]
 
 
 def _build_manifest_asvspoof(split, data_root):
@@ -363,6 +380,10 @@ def build_argparser():
                     help="folder containing ASVspoof2019_LA_* (train/dev/eval)")
     ap.add_argument("--itw-root", default="data/in_the_wild",
                     help="In-the-Wild folder containing meta.csv (--split itw)")
+    ap.add_argument("--audio-dir", default=None,
+                    help="extract EVERY .flac/.wav in this folder directly, no "
+                         "protocol needed (labels joined later at scoring). Use for "
+                         "ASVspoof 2021 DF. Pair with any --split name for the output.")
     ap.add_argument("--model", default="facebook/wav2vec2-xls-r-300m",
                     help="HF model id (or microsoft/wavlm-large)")
     ap.add_argument("--shard-size", type=int, default=100,
