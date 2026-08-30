@@ -19,11 +19,13 @@ what makes single-GPU training and real-time inference possible. Metric is **EER
 
 ```
 Sonix/
+├─ extract_embeddings.py     # cache frozen wav2vec2 embeddings to disk
+│                            #   (self-contained: the one file you copy to another machine)
 ├─ src/
 │  ├─ verify_protocol.py     # gate: checks the dataset labels parse correctly
-│  ├─ extract_embeddings.py  # cache frozen wav2vec2 embeddings to disk (self-contained)
 │  ├─ train.py               # train the MLP head on cached embeddings
 │  ├─ eval.py                # EER on the eval split + In-the-Wild cross-dataset test
+│  ├─ make_codec.py          # G.711 codec-degraded copy of a split, for robustness runs
 │  └─ score_file.py          # score_file(wav)->list[float], the demo/UI interface
 ├─ requirements.txt
 ├─ data/                     # NOT in git — put the datasets here (see below)
@@ -88,10 +90,10 @@ Every script defaults to the folders above, so from the repo root:
 python src/verify_protocol.py
 
 # 2. Cache embeddings (the slow step; done once). Smoke-test 50 files first:
-python src/extract_embeddings.py --split train --batch 8 --limit 50   # expect shape (50, 1024)
-python src/extract_embeddings.py --split train --batch 8
-python src/extract_embeddings.py --split dev   --batch 8
-python src/extract_embeddings.py --split eval  --batch 8               # 4 GB cards: --batch 4
+python extract_embeddings.py --split train --batch 8 --limit 50   # expect shape (50, 1024)
+python extract_embeddings.py --split train --batch 8
+python extract_embeddings.py --split dev   --batch 8
+python extract_embeddings.py --split eval  --batch 8               # 4 GB cards: --batch 4
 
 # 3. Train the head (minutes, because embeddings are cached)
 python src/train.py
@@ -100,7 +102,7 @@ python src/train.py
 python src/eval.py --split eval
 
 # 5. Cross-dataset: In-the-Wild (expected to be much worse — that's the headline)
-python src/extract_embeddings.py --split itw --batch 8 --itw-root data/in_the_wild
+python extract_embeddings.py --split itw --batch 8 --itw-root data/in_the_wild
 python src/eval.py --split itw
 ```
 

@@ -223,12 +223,14 @@ def _atomic_np_save(path, arr):
 
 
 def save_shard_atomic(emb_p, lab_p, files_p, emb, labels, files):
-    _atomic_np_save(emb_p, emb)
+    # order matters: the embeddings file is the resume marker, so it goes last.
+    # Die midway and the shard looks unfinished, so it is redone cleanly.
     _atomic_np_save(lab_p, labels)
     tmp = str(files_p) + ".tmp"
-    with open(tmp, "w") as fh:
+    with open(tmp, "w", encoding="utf-8") as fh:
         fh.write("\n".join(files) + ("\n" if files else ""))
     os.replace(tmp, files_p)
+    _atomic_np_save(emb_p, emb)
 
 
 # ===========================================================================
@@ -239,8 +241,23 @@ def run(args, _load_frontend=load_frontend, _embed_batch=embed_batch) -> int:
     try:
         from tqdm import tqdm
     except Exception:
-        def tqdm(x=None, **k):  # noqa
-            return x if x is not None else range(0)
+        class tqdm:  # noqa: N801 -- stand-in with the call surface we use
+            """No-op bar: a missing tqdm must never break an overnight run."""
+
+            def __init__(self, iterable=None, **kwargs):
+                self._it = iterable
+
+            def __iter__(self):
+                return iter(self._it if self._it is not None else ())
+
+            def update(self, n=1):
+                pass
+
+            def set_postfix(self, **kwargs):
+                pass
+
+            def close(self):
+                pass
 
     split = args.split
     out_dir = Path(args.out) / split
@@ -259,8 +276,9 @@ def run(args, _load_frontend=load_frontend, _embed_batch=embed_batch) -> int:
     todo_shards = []
     done_files = 0
     for s in range(n_shards):
-        emb_p, _, _ = shard_paths(out_dir, s)
-        if emb_p.exists():
+        # all three sidecars must exist -- the embeddings file is written last
+        # (see save_shard_atomic), so a half-written shard is retried, not skipped
+        if all(p.exists() for p in shard_paths(out_dir, s)):
             done_files += min(shard_size, total - s * shard_size)
         else:
             todo_shards.append(s)

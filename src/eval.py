@@ -5,8 +5,8 @@ eval.py  --  SONIX / SIH26104
 Score a cached split with the trained head, save the two arrays Yukti needs, and
 compute EER as a cross-check. This produces THE number of the whole project.
 
-    T8  in-domain:   python eval.py --split eval --model-ckpt models/head.pt
-    T9  cross-data:  python eval.py --split itw  --model-ckpt models/head.pt
+    T8  in-domain:   python src/eval.py --split eval --model-ckpt outputs/models/head.pt
+    T9  cross-data:  python src/eval.py --split itw  --model-ckpt outputs/models/head.pt
 
 For Yukti it writes  scores/<split>_labels.npy  and  scores/<split>_scores.npy
     labels: 1 = spoof
@@ -51,6 +51,9 @@ def load_split(emb_root, split):
     Xs, ys = [], []
     for s in shards:
         lab = s.with_suffix(".labels.npy")
+        if not lab.exists():
+            sys.exit(f"FATAL: {s} has no matching {lab.name}. Re-extract this "
+                     f"shard -- embeddings and labels must stay paired.")
         emb, y = np.load(s), np.load(lab)
         if len(emb) != len(y):
             sys.exit(f"FATAL: {s.name} rows {len(emb)} != labels {len(y)}.")
@@ -81,6 +84,8 @@ def main(argv=None) -> int:
     ap.add_argument("--emb-root", default="outputs/embeddings")
     ap.add_argument("--model-ckpt", default="outputs/models/head.pt")
     ap.add_argument("--out-scores", default="outputs/scores")
+    ap.add_argument("--batch", type=int, default=4096,
+                    help="scoring mini-batch (lower it if the GPU runs out)")
     ap.add_argument("--device", default=None)
     args = ap.parse_args(argv)
 
@@ -92,21 +97,33 @@ def main(argv=None) -> int:
     device = args.device or ("cuda" if torch.cuda.is_available() else "cpu")
     model = build_head(ckpt["config"]).to(device).eval()
     model.load_state_dict(ckpt["state_dict"])
-    mu = np.asarray(ckpt["mu"], np.float32)
-    sd = np.asarray(ckpt["sd"], np.float32)
+    mu = np.array(ckpt["mu"], np.float32)
+    sd = np.array(ckpt["sd"], np.float32)
+    sd[sd == 0] = 1.0            # a constant feature would otherwise give inf/nan
 
     X, y = load_split(args.emb_root, args.split)
+    in_dim = int(ckpt["config"]["in_dim"])
+    if X.shape[1] != in_dim:
+        sys.exit(f"FATAL: shards are {X.shape[1]}-dim but the checkpoint expects "
+                 f"{in_dim}. These embeddings came from a different front-end.")
     X = (X - mu) / sd
+
+    # score in chunks -- eval is ~71k x 1024, too big to push onto a 4-6 GB card
+    # (or a laptop's RAM) as one tensor
+    scores = np.empty(len(X), np.float32)
     with torch.no_grad():
-        logits = model(torch.from_numpy(X).float().to(device)).squeeze(1)
-        scores = torch.sigmoid(logits).cpu().numpy()   # higher = more spoof
+        for i in range(0, len(X), args.batch):
+            xb = torch.from_numpy(X[i:i + args.batch]).float().to(device)
+            logits = model(xb).squeeze(1)
+            scores[i:i + args.batch] = torch.sigmoid(logits).cpu().numpy()
+    # scores: higher = more spoof
 
     out = Path(args.out_scores)
     out.mkdir(parents=True, exist_ok=True)
     np.save(out / f"{args.split}_labels.npy", y.astype(np.int64))
     np.save(out / f"{args.split}_scores.npy", scores.astype(np.float32))
     print(f"saved -> {out / (args.split + '_labels.npy')}  and  "
-          f"{args.split}_scores.npy  (hand these to Yukti)")
+          f"{out / (args.split + '_scores.npy')}  (hand these to Yukti)")
 
     e, thr = eer(y, scores)
     print("=" * 56)
@@ -117,6 +134,9 @@ def main(argv=None) -> int:
     pct = e * 100
     if np.isnan(pct):
         print("  ! only one class present -- check the labels.")
+    elif args.split == "itw":
+        print("  In-the-Wild is expected to be far higher than eval. This is the "
+              "cross-dataset generalisation gap -- your headline finding.")
     elif pct < 0.01:
         print("  ! EER ~ 0%. Suspicious: eval may have leaked into training. "
               "Confirm train/dev/eval shards came from different splits.")
@@ -125,9 +145,6 @@ def main(argv=None) -> int:
     elif 30 < pct < 50 and args.split in ("eval", "dev", "train"):
         print("  ! ~40% on an in-domain split means a bug -- almost always the "
               "protocol parse or a flipped label. Re-run verify_protocol.py.")
-    elif args.split == "itw":
-        print("  In-the-Wild is expected to be far higher than eval. This is the "
-              "cross-dataset generalisation gap -- your headline finding.")
     else:
         print("  Note this number and compare with Yukti's metrics.py.")
     return 0

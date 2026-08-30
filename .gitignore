@@ -12,3 +12,8 @@ __pycache__/
 # models / caches
 *.pt
 *.npy
+
+# one-off dataset-audit scratch output (regenerate with the find/comm commands)
+expected.txt
+present.txt
+missing_eval_files.txt
