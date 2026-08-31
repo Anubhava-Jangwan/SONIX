@@ -17,7 +17,7 @@ venv/
 .venv*/
 
 # models / caches
-*.pt
+
 *.npy
 
 # one-off dataset-audit scratch output (regenerate with the find/comm commands)
