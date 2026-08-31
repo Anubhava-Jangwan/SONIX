@@ -5,54 +5,107 @@ score_file.py  --  SONIX / SIH26104   (the interface handed to Suryansh, T10)
 The whole pipeline behind one function. This is all the demo/UI needs:
 
     from score_file import score_file
-    scores = score_file("some_call.wav")   # -> [0.03, 0.05, 0.71, 0.88, ...]
+    scores = score_file("some_call.wav")                                 # baseline head
+    scores = score_file("some_call.wav", ckpt_path="outputs/models/head_aug.pt")  # augmented head
 
     Returns one score per 4-second window at 0.5s hop (so ~2 scores/second).
     Higher = more likely FAKE (AI-cloned). Range 0..1 (calibrated probability).
 
-Suryansh: until the real checkpoint exists you can keep mocking scores. The moment
-outputs/models/head.pt is on the machine, `import score_file` and this returns real ones --
-no other change to your Streamlit code. It runs on CPU (slow but fine for a demo);
-if a GPU is present it uses it automatically.
+TWO HEADS, ONE FRONT-END
+    The frozen wav2vec2 XLS-R front-end (300M params) is loaded ONCE and shared.
+    Each checkpoint -- baseline head.pt, augmented head_aug.pt -- only swaps in its
+    own small MLP head plus its input standardiser (mu/sd). So the demo can score
+    the same clip through both models back-to-back without reloading the front-end.
 
-Smoothing / hysteresis / risk-band mapping stays in the UI layer -- this returns the
-raw per-window probabilities and nothing more, exactly as agreed.
+CHECKPOINT PATH RESOLUTION
+    Paths are resolved robustly: if the given path is not found as-is we search
+    upward from this file's directory and from the current working directory for
+    outputs/models/<name>. So `streamlit run app.py` finds the checkpoint whether
+    it is launched from demo/ or from the repo root (fixes the old
+    FileNotFoundError: outputs/models/head.pt).
+
+Smoothing / hysteresis / risk-band mapping stays in the UI layer -- this returns
+the raw per-window probabilities and nothing more, exactly as agreed.
 
 CLI (for a quick check):
     python score_file.py some_call.wav
-    python score_file.py some_call.wav --ckpt outputs/models/head.pt
+    python score_file.py some_call.wav --ckpt outputs/models/head_aug.pt
 """
 
 import sys
+from pathlib import Path
+
 import numpy as np
 
 TARGET_SR = 16000
 WIN = 64000          # 4.0 s
 HOP = 8000           # 0.5 s
 
-_STATE = {"ckpt_path": "outputs/models/head.pt", "loaded": False}
+DEFAULT_CKPT = "outputs/models/head.pt"
+
+# Shared frozen front-end (loaded once) + a cache of small heads keyed by checkpoint.
+_FE = {"loaded": False}
+_HEADS = {}                                  # resolved_ckpt(str) -> {"head","mu","sd","dev_eer"}
+_STATE = {"default_ckpt": DEFAULT_CKPT}      # kept for backward compatibility
 
 
-def configure(ckpt_path="outputs/models/head.pt", model_name=None, device=None):
-    """Optional: point at a different checkpoint before the first score_file()."""
-    _STATE.update(ckpt_path=ckpt_path, loaded=False)
+def configure(ckpt_path=DEFAULT_CKPT, model_name=None, device=None):
+    """Optional: set the DEFAULT checkpoint / front-end / device used when a caller
+    does not pass ckpt_path explicitly. Safe to call more than once."""
+    _STATE["default_ckpt"] = ckpt_path
     if model_name:
         _STATE["model_name_override"] = model_name
     if device:
         _STATE["device_override"] = device
 
 
-def _lazy_load():
-    if _STATE["loaded"]:
+def resolve_ckpt(ckpt_path=None) -> str:
+    """Return an existing checkpoint path. Tries the path as-is, then searches
+    upward from the current directory and this file's directory for
+    outputs/models/<name>. Raises FileNotFoundError if nothing matches."""
+    ckpt_path = ckpt_path or _STATE.get("default_ckpt", DEFAULT_CKPT)
+    p = Path(ckpt_path)
+    if p.is_file():
+        return str(p.resolve())
+
+    name = p.name
+    bases = [Path.cwd(), Path(__file__).resolve().parent]
+    tried = []
+    for base in bases:
+        for d in [base, *base.parents]:
+            cand = d / "outputs" / "models" / name
+            tried.append(cand)
+            if cand.is_file():
+                return str(cand.resolve())
+    # last resort: the raw relative path joined onto each base
+    for base in bases:
+        cand = base / ckpt_path
+        if cand.is_file():
+            return str(cand.resolve())
+
+    raise FileNotFoundError(
+        f"checkpoint not found: {ckpt_path}  "
+        f"(also searched upward for outputs/models/{name})"
+    )
+
+
+def checkpoint_available(ckpt_path=None) -> bool:
+    """Cheap existence check for the UI -- does NOT load torch."""
+    try:
+        resolve_ckpt(ckpt_path)
+        return True
+    except FileNotFoundError:
+        return False
+
+
+def _load_frontend():
+    """Load the frozen wav2vec2 front-end exactly once and keep it resident."""
+    if _FE["loaded"]:
         return
     import torch
-    import torch.nn as nn
     from transformers import AutoFeatureExtractor, AutoModel
 
-    ckpt = torch.load(_STATE["ckpt_path"], map_location="cpu", weights_only=False)
-    cfg = ckpt["config"]
-    model_name = _STATE.get("model_name_override") or ckpt.get(
-        "front_end", "facebook/wav2vec2-xls-r-300m")
+    model_name = _STATE.get("model_name_override", "facebook/wav2vec2-xls-r-300m")
     device = _STATE.get("device_override") or (
         "cuda" if torch.cuda.is_available() else "cpu")
 
@@ -61,20 +114,43 @@ def _lazy_load():
     for p in frontend.parameters():
         p.requires_grad_(False)
 
+    _FE.update(loaded=True, torch=torch, fe=fe, frontend=frontend, device=device)
+
+
+def _load_head(ckpt_path=None) -> str:
+    """Load (and cache) the small MLP head + standardiser for one checkpoint.
+    The shared front-end is loaded on first use. Returns the resolved ckpt path."""
+    resolved = resolve_ckpt(ckpt_path)
+    if resolved in _HEADS:
+        return resolved
+
+    _load_frontend()
+    torch = _FE["torch"]
+    import torch.nn as nn
+
+    ckpt = torch.load(resolved, map_location="cpu", weights_only=False)
+    cfg = ckpt["config"]
     head = nn.Sequential(
         nn.Linear(cfg["in_dim"], cfg["hidden"]),
         nn.ReLU(),
         nn.Dropout(cfg["dropout"]),
         nn.Linear(cfg["hidden"], 1),
-    ).to(device).eval()
+    ).to(_FE["device"]).eval()
     head.load_state_dict(ckpt["state_dict"])
 
-    _STATE.update(
-        loaded=True, torch=torch, fe=fe, frontend=frontend, head=head,
-        device=device,
-        mu=np.asarray(ckpt["mu"], np.float32),
-        sd=np.asarray(ckpt["sd"], np.float32),
-    )
+    _HEADS[resolved] = {
+        "head": head,
+        "mu": np.asarray(ckpt["mu"], np.float32),
+        "sd": np.asarray(ckpt["sd"], np.float32),
+        "dev_eer": ckpt.get("dev_eer"),
+    }
+    return resolved
+
+
+def dev_eer(ckpt_path=None):
+    """Return the checkpoint's stored dev EER (loads the head; None if absent)."""
+    resolved = _load_head(ckpt_path)
+    return _HEADS[resolved].get("dev_eer")
 
 
 def _load_audio(path):
@@ -116,13 +192,16 @@ def _windows(wav):
         yield w
 
 
-def _score_windows(wins) -> list:
-    """Score a list of 64000-sample windows -> list[float] fake-probabilities.
-    Shared by score_file (batched, offline) and score_stream (one at a time, live)."""
-    torch = _STATE["torch"]
-    fe, frontend, head, device = (_STATE["fe"], _STATE["frontend"],
-                                  _STATE["head"], _STATE["device"])
-    mu, sd = _STATE["mu"], _STATE["sd"]
+def _score_windows(wins, ckpt_path=None) -> list:
+    """Score a list of 64000-sample windows -> list[float] fake-probabilities,
+    using the shared front-end and the head for `ckpt_path`. Shared by score_file
+    (batched, offline) and score_stream (one at a time, live)."""
+    resolved = _load_head(ckpt_path)
+    torch = _FE["torch"]
+    fe, frontend, device = _FE["fe"], _FE["frontend"], _FE["device"]
+    h = _HEADS[resolved]
+    head, mu, sd = h["head"], h["mu"], h["sd"]
+
     inputs = fe(list(wins), sampling_rate=TARGET_SR, return_tensors="pt",
                 padding=True)
     iv = inputs["input_values"].to(device)
@@ -135,41 +214,42 @@ def _score_windows(wins) -> list:
     return [float(p) for p in probs]
 
 
-def score_file(wav_path, batch=8) -> list:
+def score_file(wav_path, batch=8, ckpt_path=None) -> list:
     """OFFLINE interface: one calibrated fake-probability per 4 s window (0.5 s
-    hop) as a full list. Higher = faker. Use for benchmarking / the older UI."""
-    _lazy_load()
+    hop) as a full list. Higher = faker. `ckpt_path` picks the model (default =
+    baseline head.pt); pass outputs/models/head_aug.pt for the augmented head."""
+    _load_head(ckpt_path)
     wav = _load_audio(wav_path)
     wins = list(_windows(wav))
     scores = []
     for i in range(0, len(wins), batch):
-        scores.extend(_score_windows(wins[i:i + batch]))
+        scores.extend(_score_windows(wins[i:i + batch], ckpt_path))
     return scores
 
 
-def score_stream(wav_path):
+def score_stream(wav_path, ckpt_path=None):
     """LIVE interface (Suryansh's v9 contract): a generator that yields ONE
     fake-probability per 4 s window, in order, computing each on the fly. The
-    model is loaded once (via _lazy_load) and stays resident for the whole call.
-    Higher = more likely fake.
+    front-end + head are loaded once (via _load_head) and stay resident for the
+    whole call. `ckpt_path` picks the model. Higher = more likely fake.
 
-        for score in score_stream("call.wav"):
+        for score in score_stream("call.wav", ckpt_path="outputs/models/head_aug.pt"):
             ...   # UI updates as each window's score arrives
     """
-    _lazy_load()
+    _load_head(ckpt_path)
     wav = _load_audio(wav_path)
     for w in _windows(wav):
-        yield _score_windows([w])[0]
+        yield _score_windows([w], ckpt_path)[0]
 
 
 if __name__ == "__main__":
     import argparse
     ap = argparse.ArgumentParser()
     ap.add_argument("wav")
-    ap.add_argument("--ckpt", default="outputs/models/head.pt")
+    ap.add_argument("--ckpt", default=None,
+                    help="checkpoint to use (default: baseline outputs/models/head.pt)")
     args = ap.parse_args()
-    configure(ckpt_path=args.ckpt)
-    s = score_file(args.wav)
+    s = score_file(args.wav, ckpt_path=args.ckpt)
     print(f"{len(s)} windows (~{len(s) * 0.5:.1f}s of coverage)")
     print("scores:", [round(x, 3) for x in s])
     if s:
