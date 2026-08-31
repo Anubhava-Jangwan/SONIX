@@ -1,8 +1,24 @@
 # SONIX / SIH26104 — everything EXCEPT torch & torchaudio
 # (install those from the pytorch.org CUDA index — see README / setup steps)
+
+# --- offline pipeline: embeddings, training, evaluation ---
 transformers>=4.35
 soundfile>=0.12
 pandas>=2.0
 scikit-learn>=1.3
+scipy>=1.10             # resample_poly; without it the live path falls back to linear interp
 tqdm>=4.66
 numpy>=1.24
+
+# --- live detection server (realtime/) ---
+aiohttp>=3.9            # HTTP + WebSocket server, /mic page, /api/*
+websockets>=12.0        # standalone WS client helpers
+
+# --- dashboard (realtime/live_ui.py) ---
+streamlit>=1.30
+plotly>=5.18
+requests>=2.31
+
+# --- tests ---
+pytest>=7.4
+pytest-asyncio>=0.23

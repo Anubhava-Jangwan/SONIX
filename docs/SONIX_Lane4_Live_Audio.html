@@ -1,0 +1,773 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<!--
+  STANDALONE COPY.
+  Identical content to the published artifact, but carrying its own document
+  skeleton (doctype / html / head / body) so it opens correctly by
+  double-clicking it from disk or serving it from any static host.
+
+  The published artifact version omits these tags, because the Artifact tool
+  supplies its own skeleton at publish time.
+
+  Fully self-contained apart from one Google Fonts request; remove that <link>
+  and the CSS fallback stacks take over.
+-->
+<!--
+  ============================================================================
+  SONIX / SIH26104 — LANE 4: LIVE AUDIO INGEST & LIVE CHART
+  ============================================================================
+
+  A single-file, static HTML plan document. No JavaScript, no build step, no
+  runtime dependencies. The only external request is the Google Fonts
+  stylesheet on line ~40.
+
+  WHY IT IS BUILT THIS WAY
+  ------------------------
+  This page is published through Claude's Artifact tool, which wraps whatever
+  it is given in its own <!doctype html> ... <head> ... <body> skeleton at
+  publish time. That is why this file starts straight at <title> with no
+  doctype, no <html>, no <head> and no <body> tags of its own — adding them
+  would produce nested documents.
+
+  If you want a version that opens correctly by double-clicking it from disk,
+  use the standalone copy instead (SONIX_Lane4_Live_Audio.html), which carries
+  the full document skeleton.
+
+  DOCUMENT MAP
+  ------------
+    <title>          the artifact's name in the gallery and browser tab
+    <link>           Google Fonts — IBM Plex Sans + IBM Plex Mono
+    <style>          all styling, inlined (see the four blocks below)
+    .wrap            the single content column
+      header.mast    title, standfirst, and the five-fact status strip
+      section 01     audit of what was stub vs. real before this lane
+      section 02     scope, and the one rule the lane is built around
+      section 03     how live audio connects (the pipeline)
+      section 04     the chart, and why it is two charts
+      section 05     requirements
+      section 06     phases, with what is blocked on whom
+      section 07     how to run it
+      section 08     what was verified end to end
+      .foot          standing reminders carried from the team handbook
+============================================================================ -->
+
+<title>Lane 4 — Live Audio Ingest</title>
+
+<!--
+  Google Fonts is the one external stylesheet host the Artifact CSP permits.
+  Two weights of each family only, to keep the request small:
+    IBM Plex Sans  — body and headings
+    IBM Plex Mono  — labels, tables of file paths, code, and all numerals
+  Both fall back to a real system stack in the CSS below, so a blocked or slow
+  font request degrades rather than breaking the layout.
+-->
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap">
+
+<style>
+  /* ==========================================================================
+     1. DESIGN TOKENS — LIGHT THEME (the base definition)
+     ==========================================================================
+     Every colour in this document is defined here as a custom property and
+     referenced by role everywhere else. Nothing below this block declares a
+     raw hex value, which is what lets the two dark-theme blocks that follow
+     re-theme the whole page by overriding tokens alone.
+
+     The neutrals are deliberately biased slightly toward teal rather than
+     being pure grey, so they sit with the accent instead of fighting it.
+
+     Palette roles:
+       --ground     page background, behind the content column
+       --surface    cards, tables, callouts
+       --surface-2  table headers and inset chips
+       --line       borders that should read
+       --line-soft  hairlines between table rows
+       --ink        primary text
+       --ink-2      secondary text (standfirsts, table prose)
+       --ink-3      muted text (eyebrows, column headers, list markers)
+       --accent     teal; section numbers, links, inline code, "next" chips
+       --good/--warn/--crit  semantic status ONLY — never used as an accent
+     ========================================================================== */
+  :root{
+    color-scheme: light;
+    --ground:#f4f6f6;
+    --surface:#ffffff;
+    --surface-2:#eaeeee;
+    --line:#d3dbdb;
+    --line-soft:#e3e9e9;
+    --ink:#0d1414;
+    --ink-2:#3d4a4a;
+    --ink-3:#6e7d7d;
+    --accent:#0b7c86;
+    --accent-soft:rgba(11,124,134,.10);
+    --good:#0a7f2e;
+    --warn:#8a6100;
+    --crit:#b3271f;
+    --good-bg:rgba(10,127,46,.11);
+    --warn-bg:rgba(138,97,0,.12);
+    --crit-bg:rgba(179,39,31,.10);
+    --code-bg:#0e1718;   /* code blocks stay dark in both themes, by choice */
+    --code-ink:#dbe6e6;
+    --shadow:0 1px 2px rgba(13,20,20,.05),0 8px 24px -16px rgba(13,20,20,.28);
+  }
+
+  /* ==========================================================================
+     2. DARK THEME — OS PREFERENCE
+     ==========================================================================
+     The viewer has THREE states, not two:
+       (a) explicit light  -> data-theme="light" stamped on :root
+       (b) explicit dark   -> data-theme="dark"  stamped on :root
+       (c) system default  -> nothing stamped; only prefers-color-scheme applies
+
+     Most viewers are in state (c), so this media query is what they actually
+     see. The :not([data-theme="light"]) guard means an explicit light choice
+     still beats a dark OS setting.
+
+     Note this block redefines TOKENS ONLY. No component is ever styled inside
+     a media query — a colour whose only definition lives here would never
+     apply in the un-stamped state, which is the classic unreadable-artifact
+     bug.
+     ========================================================================== */
+  @media (prefers-color-scheme: dark){
+    :root:not([data-theme="light"]){
+      color-scheme: dark;
+      --ground:#0b1112;
+      --surface:#121a1b;
+      --surface-2:#182122;
+      --line:#263334;
+      --line-soft:#1d2727;
+      --ink:#eef4f4;
+      --ink-2:#b3c1c1;
+      --ink-3:#7e8d8d;
+      --accent:#3fc2ce;              /* stepped lighter for the dark ground */
+      --accent-soft:rgba(63,194,206,.12);
+      --good:#39c26a;
+      --warn:#e0a92b;
+      --crit:#f0685f;
+      --good-bg:rgba(57,194,106,.13);
+      --warn-bg:rgba(224,169,43,.13);
+      --crit-bg:rgba(240,104,95,.12);
+      --code-bg:#080e0f;
+      --code-ink:#cfdcdc;
+      --shadow:0 1px 2px rgba(0,0,0,.4),0 10px 28px -18px rgba(0,0,0,.8);
+    }
+  }
+
+  /* ==========================================================================
+     3. DARK THEME — EXPLICIT TOGGLE
+     ==========================================================================
+     Identical token values to block 2, under the data-theme="dark" scope. This
+     duplication is intentional and required: block 2 only fires when the OS is
+     dark, so without this block a viewer who toggles to dark on a light OS
+     would get light tokens. Keep the two blocks in sync when editing.
+     ========================================================================== */
+  :root[data-theme="dark"]{
+    color-scheme: dark;
+    --ground:#0b1112;
+    --surface:#121a1b;
+    --surface-2:#182122;
+    --line:#263334;
+    --line-soft:#1d2727;
+    --ink:#eef4f4;
+    --ink-2:#b3c1c1;
+    --ink-3:#7e8d8d;
+    --accent:#3fc2ce;
+    --accent-soft:rgba(63,194,206,.12);
+    --good:#39c26a;
+    --warn:#e0a92b;
+    --crit:#f0685f;
+    --good-bg:rgba(57,194,106,.13);
+    --warn-bg:rgba(224,169,43,.13);
+    --crit-bg:rgba(240,104,95,.12);
+    --code-bg:#080e0f;
+    --code-ink:#cfdcdc;
+    --shadow:0 1px 2px rgba(0,0,0,.4),0 10px 28px -18px rgba(0,0,0,.8);
+  }
+
+  /* ==========================================================================
+     4. BASE
+     ========================================================================== */
+  *{box-sizing:border-box}
+
+  /* body MUST paint an explicit background from a token. The artifact host
+     composites the page over a ground it paints in ITS theme, so a transparent
+     body silently borrows the host's colour and can end up with one theme's
+     text on the other theme's background. */
+  body{
+    margin:0; background:var(--ground); color:var(--ink);
+    font-family:"IBM Plex Sans",ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,sans-serif;
+    font-size:16px; line-height:1.62;
+    -webkit-font-smoothing:antialiased;
+  }
+
+  /* Single content column. 940px is wide enough for the eight-column tables
+     while prose below is separately capped at ~68ch for readability. */
+  .wrap{max-width:940px;margin:0 auto;padding:0 28px 96px}
+  @media(max-width:640px){.wrap{padding:0 18px 64px}}
+
+  /* ==========================================================================
+     5. MASTHEAD
+     ========================================================================== */
+  .mast{padding:56px 0 34px;border-bottom:1px solid var(--line)}
+
+  /* Mono + wide tracking + uppercase: the utility label treatment, reused for
+     the section eyebrow, table headers, chips and the footer. */
+  .eyebrow{
+    font-family:"IBM Plex Mono",ui-monospace,monospace;
+    font-size:11.5px;letter-spacing:.15em;text-transform:uppercase;
+    color:var(--accent);font-weight:500;margin:0 0 14px;
+  }
+
+  /* clamp() scales the headline between phone and desktop without a media
+     query. text-wrap:balance evens out the line lengths on the wrap. */
+  h1{
+    font-size:clamp(2rem,5.2vw,2.9rem);line-height:1.08;margin:0 0 16px;
+    font-weight:700;letter-spacing:-.024em;text-wrap:balance;
+  }
+  .standfirst{font-size:1.09rem;color:var(--ink-2);max-width:62ch;margin:0 0 26px}
+
+  /* The five-fact status strip. The 1px gap + background trick draws the
+     dividing lines: the grid's own background shows through the gaps between
+     the cells, so no per-cell borders are needed and none double up. */
+  .facts{
+    display:grid;grid-template-columns:repeat(auto-fit,minmax(148px,1fr));
+    gap:1px;background:var(--line-soft);border:1px solid var(--line-soft);
+    border-radius:8px;overflow:hidden;
+  }
+  .fact{background:var(--surface);padding:12px 14px}
+  .fact dt{
+    font-family:"IBM Plex Mono",monospace;font-size:10.5px;letter-spacing:.12em;
+    text-transform:uppercase;color:var(--ink-3);margin:0 0 4px;
+  }
+  /* tabular-nums keeps the "+760 / −87" figure from shifting width */
+  .fact dd{margin:0;font-weight:600;font-size:.95rem;font-variant-numeric:tabular-nums}
+
+  /* ==========================================================================
+     6. SECTIONS AND PROSE
+     ========================================================================== */
+  section{padding-top:46px}
+  h2{
+    font-size:1.42rem;font-weight:650;letter-spacing:-.016em;margin:0 0 6px;
+    text-wrap:balance;
+  }
+  /* The 01..08 markers are legitimate here because the sections ARE a sequence
+     the reader is meant to follow — audit, scope, mechanism, then how to run
+     it. They would be decoration on an unordered page. */
+  h2 .num{
+    font-family:"IBM Plex Mono",monospace;font-size:.78em;font-weight:500;
+    color:var(--accent);margin-right:.6em;
+  }
+  h3{font-size:1.02rem;font-weight:650;margin:30px 0 8px;letter-spacing:-.008em}
+  p{margin:0 0 14px;max-width:68ch}          /* ~65ch measure for running text */
+  .lede{color:var(--ink-2);max-width:68ch;margin:0 0 20px}
+  a{color:var(--accent)}
+  strong{font-weight:650}
+
+  /* ==========================================================================
+     7. TABLES
+     ==========================================================================
+     Every table is wrapped in .scroll so wide content scrolls INSIDE its own
+     container. Without this the page body itself would scroll sideways on a
+     phone, which is the single most common artifact layout bug.
+     ========================================================================== */
+  .scroll{
+    overflow-x:auto;margin:20px 0;border:1px solid var(--line);
+    border-radius:8px;background:var(--surface);box-shadow:var(--shadow);
+  }
+  table{border-collapse:collapse;width:100%;font-size:.9rem;min-width:520px}
+  th,td{text-align:left;padding:10px 14px;border-bottom:1px solid var(--line-soft);vertical-align:top}
+  thead th{
+    font-family:"IBM Plex Mono",monospace;font-size:10.5px;letter-spacing:.11em;
+    text-transform:uppercase;color:var(--ink-3);font-weight:500;
+    background:var(--surface-2);border-bottom:1px solid var(--line);
+  }
+  tbody tr:last-child td{border-bottom:0}   /* no rule against the card edge */
+  td code,th code{font-size:.86em}
+
+  /* Utility: mono + aligned digits. Applied to file paths, stub return values
+     and phase numbers so they read as literal code rather than prose. */
+  .mono{font-family:"IBM Plex Mono",monospace;font-variant-numeric:tabular-nums}
+
+  /* ==========================================================================
+     8. CODE
+     ========================================================================== */
+  /* Inline code sits on a tinted accent wash rather than a grey box, so it
+     reads as a reference rather than an interruption. */
+  code{
+    font-family:"IBM Plex Mono",ui-monospace,monospace;font-size:.87em;
+    background:var(--accent-soft);color:var(--ink);padding:.12em .38em;border-radius:4px;
+  }
+  /* Block code stays dark in BOTH themes — a terminal is a terminal. */
+  pre{
+    background:var(--code-bg);color:var(--code-ink);padding:16px 18px;border-radius:8px;
+    overflow-x:auto;font-family:"IBM Plex Mono",monospace;font-size:.83rem;line-height:1.65;
+    margin:16px 0;border:1px solid var(--line);
+  }
+  pre code{background:none;padding:0;color:inherit;font-size:1em}
+  pre .c{color:var(--ink-3)}                 /* shell comments inside <pre> */
+
+  /* ==========================================================================
+     9. STATUS CHIPS
+     ==========================================================================
+     Used in the phases table. The ::before dot inherits currentColor, so each
+     variant needs only a colour pair. Crucially the chip always carries a text
+     label — status is never communicated by colour alone, which keeps it
+     readable for colour-blind viewers and in print.
+     ========================================================================== */
+  .chip{
+    display:inline-flex;align-items:center;gap:6px;white-space:nowrap;
+    font-family:"IBM Plex Mono",monospace;font-size:10.5px;font-weight:600;
+    letter-spacing:.08em;text-transform:uppercase;padding:3px 8px;border-radius:5px;
+  }
+  .chip::before{content:"";width:6px;height:6px;border-radius:50%;background:currentColor;flex:none}
+  .chip.done {color:var(--good);   background:var(--good-bg)}
+  .chip.next {color:var(--accent); background:var(--accent-soft)}
+  .chip.block{color:var(--crit);   background:var(--crit-bg)}
+  .chip.todo {color:var(--ink-3);  background:var(--surface-2)}
+  .chip.warn {color:var(--warn);   background:var(--warn-bg)}
+
+  /* ==========================================================================
+     10. CALLOUTS
+     ==========================================================================
+     Left rule carries the severity. Default is critical (red); .rule marks a
+     design decision rather than a hazard and takes the accent instead.
+     ========================================================================== */
+  .callout{
+    border:1px solid var(--line);border-left:3px solid var(--crit);
+    background:var(--surface);border-radius:0 8px 8px 0;padding:16px 18px;margin:22px 0;
+    box-shadow:var(--shadow);
+  }
+  .callout.rule{border-left-color:var(--accent)}
+  .callout h4{margin:0 0 6px;font-size:.95rem;font-weight:650}
+  .callout p{margin:0;color:var(--ink-2);font-size:.94rem}
+  .callout p + p{margin-top:9px}
+
+  /* ==========================================================================
+     11. PIPELINE DIAGRAM
+     ==========================================================================
+     The audio path, drawn as a labelled stack rather than an SVG so it stays
+     selectable, searchable and responsive. Each row is one stage: a fixed-width
+     mono key on the left, the description on the right.
+
+     .stage.flag tints a row red — used for the one stage that is still a stub
+     (the wav2vec2 embedding step), so the gap in the pipeline is impossible to
+     read past.
+     ========================================================================== */
+  .pipe{
+    display:flex;flex-direction:column;gap:0;margin:24px 0;
+    border:1px solid var(--line);border-radius:8px;overflow:hidden;background:var(--surface);
+    box-shadow:var(--shadow);
+  }
+  .stage{padding:14px 18px;border-bottom:1px solid var(--line-soft);display:flex;gap:16px;align-items:flex-start}
+  .stage:last-child{border-bottom:0}
+  .stage-k{
+    flex:none;width:112px;font-family:"IBM Plex Mono",monospace;font-size:10.5px;
+    letter-spacing:.1em;text-transform:uppercase;color:var(--ink-3);padding-top:3px;
+  }
+  /* min-width:0 lets the flex child actually shrink, so long <code> spans wrap
+     instead of forcing the row wider than the card. */
+  .stage-v{flex:1;min-width:0}
+  .stage-v b{font-weight:600;display:block;margin-bottom:2px;font-size:.95rem}
+  .stage-v span{color:var(--ink-2);font-size:.88rem;display:block}
+  .stage-v .mono{font-size:.83rem}
+  .stage.flag{background:var(--crit-bg)}
+
+  /* ==========================================================================
+     12. LISTS AND FOOTER
+     ========================================================================== */
+  ul{margin:0 0 16px;padding-left:20px;max-width:68ch}
+  li{margin-bottom:7px}
+  li::marker{color:var(--ink-3)}             /* recessive bullets */
+
+  hr{border:0;border-top:1px solid var(--line);margin:44px 0 0}
+
+  /* The four standing reminders carried over from the team handbook. Flex-wrap
+     so they stack cleanly on a phone. */
+  .foot{
+    margin-top:40px;padding-top:20px;border-top:1px solid var(--line);
+    font-family:"IBM Plex Mono",monospace;font-size:11.5px;letter-spacing:.06em;
+    color:var(--ink-3);display:flex;flex-wrap:wrap;gap:6px 18px;
+  }
+</style>
+</head>
+<body>
+
+<div class="wrap">
+
+  <!-- ======================================================================
+       MASTHEAD
+       The five facts are chosen so the reader knows the state of the lane
+       before reading a word of prose: who owns it, when it is due, what works,
+       what does not, and how much code moved.
+       ====================================================================== -->
+  <header class="mast">
+    <p class="eyebrow">SIH26104 · Team Sonix · Lane 4</p>
+    <h1>Live Audio Ingest &amp; Live Chart</h1>
+    <p class="standfirst">
+      Getting real microphone audio into the detection pipeline, and putting an honest
+      chart on the screen beside it. The fourth lane alongside <em>fix the model</em>,
+      <em>honest numbers</em>, and <em>a demo that cannot fail</em>.
+    </p>
+    <dl class="facts">
+      <div class="fact"><dt>Owner</dt><dd>Ken</dd></div>
+      <div class="fact"><dt>Deadline</dt><dd>1–2 Sept 2026</dd></div>
+      <!-- Inline colour here is a deliberate exception: these two facts ARE
+           status, and reuse the semantic tokens rather than new values. -->
+      <div class="fact"><dt>Audio path</dt><dd style="color:var(--good)">Built</dd></div>
+      <div class="fact"><dt>Scoring</dt><dd style="color:var(--crit)">Gated</dd></div>
+      <div class="fact"><dt>Net change</dt><dd>+760 / −87</dd></div>
+    </dl>
+  </header>
+
+  <!-- ======================================================================
+       01 — THE AUDIT
+       Opens with the audit rather than the plan, because the plan only makes
+       sense once you know the starting point was not what the project state
+       file claimed.
+       ====================================================================== -->
+  <section>
+    <h2><span class="num">01</span>What was actually there</h2>
+    <p class="lede">
+      The project state file described <code>realtime/</code> as “fully functional in mock
+      mode.” It was not. Every load-bearing piece of the audio path was a no-op, so the
+      module imported cleanly, ran without error, and did nothing.
+    </p>
+
+    <div class="scroll">
+      <table>
+        <thead>
+          <tr><th>Component</th><th>Claimed</th><th>Actually was</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><code>RingBuffer.push()</code></td><td>4-second sliding window</td><td class="mono">pass</td></tr>
+          <tr><td><code>get_emitted_windows()</code></td><td>emits windows</td><td class="mono">return []</td></tr>
+          <tr><td><code>WavFileSource.read()</code></td><td>reads audio</td><td class="mono">return None</td></tr>
+          <tr><td><code>VAD.is_speech()</code></td><td>silence gate</td><td class="mono">return True</td></tr>
+          <tr><td><code>engine._embed_window()</code></td><td>wav2vec2, 1024-dim</td><td class="mono">np.random.randn(1024)</td></tr>
+          <tr><td><code>MockScorer.score()</code></td><td>deterministic mock</td><td class="mono">RandomState(42).rand()</td></tr>
+          <tr><td>Live Calls tab</td><td>live call view</td><td>hardcoded literals</td></tr>
+          <tr><td><code>server.py</code> consent</td><td>approve → LISTENING</td><td>approved from the wrong state — <strong>all audio dropped</strong></td></tr>
+          <tr><td><code>--mock</code> flag</td><td>opt into mock</td><td><code>default=True</code> — real scoring unreachable</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>
+      The consequence worth naming: <code>/api/score-file</code> returned
+      <span class="mono">windows_scored: 0</span> for every upload. The sample response in the
+      project reference — 68 windows, mean 0.32 — was not reachable from that code.
+    </p>
+  </section>
+
+  <!-- ======================================================================
+       02 — SCOPE
+       In/out first, then the single rule that governs every UI decision in
+       the lane. The .rule callout marks it as a decision, not a hazard.
+       ====================================================================== -->
+  <section>
+    <h2><span class="num">02</span>Scope</h2>
+    <p>
+      <strong>In.</strong> Browser microphone capture, sample-rate normalisation, the sliding
+      window, the silence gate, consent gating on real audio, per-window telemetry, and the
+      live chart.
+    </p>
+    <p>
+      <strong>Out.</strong> Training anything, the wav2vec2 embedding step, threshold
+      calibration, Asterisk/SIP. Those sit in Lanes 1–2, or in phase 4 below.
+    </p>
+
+    <div class="callout rule">
+      <h4>The rule this lane is built around</h4>
+      <p>
+        The dashboard shows <strong>no risk band while no trained head is loaded</strong>. A mock
+        number rendered as a verdict is the single thing most likely to lose the jury Q&amp;A,
+        so the gate is enforced server-side through a <code>scoring_available</code> flag — not
+        by remembering to hide it.
+      </p>
+    </div>
+  </section>
+
+  <!-- ======================================================================
+       03 — THE PIPELINE
+       The core of the document. Eight stages from browser to score, with the
+       one remaining stub flagged in red so it cannot be read past.
+       ====================================================================== -->
+  <section>
+    <h2><span class="num">03</span>How live audio connects</h2>
+    <p class="lede">
+      Capture happens in the browser and arrives as binary frames on the same WebSocket the
+      dashboard already uses. Nothing native is installed on Windows, and it is the path the
+      deck already claims.
+    </p>
+
+    <div class="pipe">
+      <div class="stage">
+        <div class="stage-k">Browser</div>
+        <div class="stage-v">
+          <b>getUserMedia → AudioWorklet @ 16 kHz</b>
+          <span>Float32 frames converted to little-endian int16 PCM, sent as WebSocket binary frames.</span>
+        </div>
+      </div>
+      <div class="stage">
+        <div class="stage-k">Transport</div>
+        <div class="stage-v">
+          <b class="mono">ws://localhost:8000/ws</b>
+          <span><span class="mono">TEXT</span> <code>start_mic_call</code> creates the session and returns a pairing code. <span class="mono">BINARY</span> frames carry the audio.</span>
+        </div>
+      </div>
+      <div class="stage">
+        <div class="stage-k">Normalise</div>
+        <div class="stage-v">
+          <b>pcm16 → float32 → resample to 16 kHz</b>
+          <span>Browsers hand over 48 kHz, Asterisk 8 kHz. wav2vec2 was trained at 16 kHz and is sensitive to anything else.</span>
+        </div>
+      </div>
+      <div class="stage">
+        <div class="stage-k">Consent</div>
+        <div class="stage-v">
+          <b>Session.push_audio() drops everything until approved</b>
+          <span>Not a UI convention — the state machine refuses the audio, and the audit trail records the refusal.</span>
+        </div>
+      </div>
+      <div class="stage">
+        <div class="stage-k">Window</div>
+        <div class="stage-v">
+          <b>4.0 s window, 0.5 s hop</b>
+          <span>87.5% overlap. The first window waits until it is genuinely full — a half-silent window is exactly the input that produces a false “fake”.</span>
+        </div>
+      </div>
+      <div class="stage">
+        <div class="stage-k">Silence gate</div>
+        <div class="stage-v">
+          <b>25 ms frames, RMS + zero-crossing, ≥20% speech to pass</b>
+          <span>Every window is logged whether it passes or not, which is what makes the gate visible on the chart instead of merely claimed.</span>
+        </div>
+      </div>
+      <!-- .flag: the one stage that is still a stub. Tinted so a reader
+           skimming the pipeline cannot miss the gap. -->
+      <div class="stage flag">
+        <div class="stage-k">Embed</div>
+        <div class="stage-v">
+          <b>Still a stub — returns random noise</b>
+          <span>No wav2vec2 exists anywhere in <code>realtime/</code>. This is phase 4, and it is on the critical path.</span>
+        </div>
+      </div>
+      <div class="stage">
+        <div class="stage-k">Score</div>
+        <div class="stage-v">
+          <b>Batches ≤8 windows across calls every 0.5 s</b>
+          <span>Mock scorer today; <code>head.pt</code> via <code>--ckpt</code> when it arrives.</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="callout">
+      <h4>One constraint that will bite on stage</h4>
+      <p>
+        <code>getUserMedia</code> requires a secure context. <strong><code>http://localhost</code>
+        counts; a LAN IP does not.</strong> Demo from the machine running the server, or the
+        browser silently refuses the microphone.
+      </p>
+    </div>
+
+    <h3>New and rewritten files</h3>
+    <div class="scroll">
+      <table>
+        <thead><tr><th>File</th><th>What changed</th></tr></thead>
+        <tbody>
+          <tr><td class="mono">realtime/miccapture.py</td><td><strong>New</strong> — serves the capture page at <code>/mic</code></td></tr>
+          <tr><td class="mono">realtime/ringbuffer.py</td><td>Real sliding window; never zero-pads a short window</td></tr>
+          <tr><td class="mono">realtime/vad.py</td><td>Energy + ZCR gate, exposes <code>last_stats</code> for the chart</td></tr>
+          <tr><td class="mono">realtime/resample.py</td><td>48k / 44.1k / 8k → 16k, plus PCM16 codecs</td></tr>
+          <tr><td class="mono">realtime/source.py</td><td><code>WavFileSource</code> actually decodes; new <code>MicSource</code></td></tr>
+          <tr><td class="mono">realtime/session.py</td><td>Added <code>window_log</code> and <code>telemetry()</code></td></tr>
+          <tr><td class="mono">realtime/server.py</td><td>Mic lifecycle, binary ingest, three endpoints, consent fix, <code>--mock</code> fix</td></tr>
+          <tr><td class="mono">realtime/live_ui.py</td><td>Live Calls tab rebuilt on real data, two charts</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3>New endpoints</h3>
+    <!-- <span class="c"> marks shell/JSON comments inside code blocks -->
+<pre><code>GET  /mic                      <span class="c">microphone capture page</span>
+GET  /api/telemetry?limit=240  <span class="c">windows, VAD stats, scores, scoring_available</span>
+POST /api/approve              <span class="c">{"call_id": "..."}  approve pairing</span>
+POST /api/end-call             <span class="c">{"call_id": "..."}  end a call</span>
+WS   /ws  TEXT                 <span class="c">{"type":"start_mic_call","sample_rate":48000}</span>
+WS   /ws  BINARY               <span class="c">int16 LE PCM, mono</span></code></pre>
+  </section>
+
+  <!-- ======================================================================
+       04 — THE CHART
+       Explains the two-chart decision, which is the part most likely to be
+       questioned and reversed by someone who has not thought it through.
+       ====================================================================== -->
+  <section>
+    <h2><span class="num">04</span>The chart</h2>
+    <p class="lede">
+      Two charts, deliberately not sharing a pair of axes. A risk probability and an audio
+      level are different measures, and putting them on one y-axis would misrepresent both.
+    </p>
+
+    <h3>Risk timeline — hidden until a real head is loaded</h3>
+    <p>
+      P(AI voice) against seconds into the call on a 0–100% axis, with the Green / Amber / Red
+      bands shaded behind the line and the two thresholds drawn as labelled dotted rules. One
+      series, so the line needs no legend. Band colours always ship with a text label, never
+      colour alone.
+    </p>
+
+    <h3>Audio path — always visible</h3>
+    <p>
+      Speech ratio per window, with windows the silence gate dropped marked as grey ×. This is
+      the chart that keeps the demo honest while scoring is off: it shows capture, windowing
+      and the gate genuinely working on live microphone audio, and there is nothing in it to
+      fake.
+    </p>
+
+    <div class="callout">
+      <h4>Thresholds are provisional</h4>
+      <p>
+        Amber ≥ 35%, Red ≥ 65%, carried over from the clean benchmark and captioned as
+        provisional on screen. Lane 1 owns recalibration on real recordings; when it lands,
+        change <code>AMBER_AT</code> and <code>RED_AT</code> in <code>live_ui.py</code>.
+      </p>
+    </div>
+  </section>
+
+  <!-- ======================================================================
+       05 — REQUIREMENTS
+       Environment, browser and hardware, then the two external blockers.
+       ====================================================================== -->
+  <section>
+    <h2><span class="num">05</span>Requirements</h2>
+    <div class="scroll">
+      <table>
+        <thead><tr><th>Area</th><th>Requirement</th></tr></thead>
+        <tbody>
+          <tr><td>Runtime</td><td><code>pip install -r requirements.txt</code> — aiohttp, streamlit, plotly, requests, scipy and pytest-asyncio were all missing from it and are now listed</td></tr>
+          <tr><td>Browser</td><td>Chrome or Edge. Firefox ignores a requested <code>AudioContext</code> sample rate, so resampling falls to the server. Safari untested.</td></tr>
+          <tr><td>Host</td><td>Open the capture page as <code>http://localhost:8000/mic</code></td></tr>
+          <tr><td>Hardware</td><td>A microphone. Once wav2vec2 lands, a 4-second window is roughly a second of CPU compute — a GPU is needed for true real-time, which is why the batching engine exists.</td></tr>
+          <tr><td>Blocked on Yugal</td><td><code>head.pt</code>, and the fp16 NaN fix</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="callout">
+      <h4>fp16 is not a theoretical problem</h4>
+      <p>
+        The cached G.711 eval embeddings in this clone are <strong>100% NaN</strong> — all 350
+        rows across all four shards. The clean set is 2.5% NaN, 550 rows of 21,794. Any EER
+        computed from the G.711 set today is meaningless, and it would land near 40%, which
+        reads like a label bug rather than what it is.
+      </p>
+    </div>
+  </section>
+
+  <!-- ======================================================================
+       06 — PHASES
+       The only table with status chips. Phase 4 is called out in prose below
+       the table because it is the one item that determines whether anything
+       else in the lane produces a real number.
+       ====================================================================== -->
+  <section>
+    <h2><span class="num">06</span>Phases</h2>
+    <div class="scroll">
+      <table>
+        <thead><tr><th style="width:34px">#</th><th>Work</th><th style="width:106px">State</th></tr></thead>
+        <tbody>
+          <tr><td class="mono">0</td><td>Audit — separate stub from real</td><td><span class="chip done">Done</span></td></tr>
+          <tr><td class="mono">1</td><td>Ring buffer, VAD, resampling</td><td><span class="chip done">Done</span></td></tr>
+          <tr><td class="mono">2</td><td>Mic page, binary WS ingest, consent fix</td><td><span class="chip done">Done</span></td></tr>
+          <tr><td class="mono">3</td><td>Telemetry endpoint and live chart</td><td><span class="chip done">Done</span></td></tr>
+          <tr><td class="mono">4</td><td><strong>wav2vec2 embedding step</strong> — replace the random noise in <code>_embed_window</code> with the real frozen front-end, shared with <code>extract_embeddings.py</code></td><td><span class="chip next">Next</span></td></tr>
+          <tr><td class="mono">5</td><td>Wire <code>head.pt</code> via <code>--ckpt</code>, flip <code>scoring_available</code>, verify against fp32 embeddings</td><td><span class="chip block">Blocked</span></td></tr>
+          <tr><td class="mono">6</td><td>Recalibrate Amber / Red on real recordings</td><td><span class="chip block">Blocked</span></td></tr>
+          <tr><td class="mono">7</td><td>Replay mode — stream a validated wav through the same path</td><td><span class="chip todo">Open</span></td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>
+      <strong>Phase 4 is the only critical-path item nobody is blocked on.</strong> Until it is
+      done the engine's numbers are noise regardless of which head is loaded — so it has to
+      land <em>before</em> <code>head.pt</code> arrives, not after.
+    </p>
+    <p>
+      Phase 7 is worth doing even if 5 and 6 land. <code>WavFileSource</code> decodes properly
+      now, so replay is small, and it is the difference between a demo that depends on stage
+      luck and one that does not.
+    </p>
+  </section>
+
+  <!-- ======================================================================
+       07 — RUNNING IT
+       Copy-pasteable. Two terminals plus a browser tab, then the one-line
+       change that turns scoring on once head.pt exists.
+       ====================================================================== -->
+  <section>
+    <h2><span class="num">07</span>Running it</h2>
+<pre><code>pip install -r requirements.txt
+
+<span class="c"># terminal 1 — server</span>
+python -m realtime.server --mock --ws-port 8000 --mode webrtc
+
+<span class="c"># terminal 2 — dashboard</span>
+streamlit run realtime/live_ui.py
+
+<span class="c"># browser tab — capture (Chrome/Edge, must be localhost)</span>
+http://localhost:8000/mic</code></pre>
+    <p>
+      Press <strong>Start capture</strong>, allow the microphone, read the six-digit pairing
+      code off the capture page, approve it in the dashboard's Live Calls tab. The audio-path
+      chart starts moving about four seconds later — the first window has to fill.
+    </p>
+    <p>Once <code>head.pt</code> exists:</p>
+<pre><code>python -m realtime.server --ckpt outputs/models/head.pt --ws-port 8000 --mode webrtc</code></pre>
+    <p>
+      That flips <code>scoring_available</code> to true and reveals the risk timeline. Nothing
+      in the dashboard needs to change.
+    </p>
+  </section>
+
+  <!-- ======================================================================
+       08 — VERIFIED
+       Measured results, not claims. Closes by naming what is still untested,
+       so the document does not overstate its own confidence.
+       ====================================================================== -->
+  <section>
+    <h2><span class="num">08</span>Verified</h2>
+    <p class="lede">
+      End-to-end against a running server: 14 seconds of synthetic audio sent at 48 kHz with a
+      five-second silent stretch in the middle.
+    </p>
+    <ul>
+      <li>Audio sent before approval → <strong>0 windows emitted</strong>. The consent gate holds.</li>
+      <li>48 kHz → 16 kHz: 14.0 s in, 14.0 s buffered.</li>
+      <li>21 windows emitted from 14 s at 4.0 s / 0.5 s — arithmetically correct.</li>
+      <li>Silence gate dropped 5 of 21.</li>
+      <li><code>scoring_available: false</code> throughout, so the risk band stayed hidden.</li>
+      <li>All 12 existing tests in <code>realtime/tests/</code> still pass.</li>
+    </ul>
+    <p>
+      None of this is covered by the test suite yet. Phase 4 should add cases for the ring
+      buffer's window arithmetic and the VAD boundary — the two places a silent regression
+      would be expensive.
+    </p>
+  </section>
+
+  <!-- Standing reminders carried verbatim from the team handbook footer. -->
+  <div class="foot">
+    <span>SONIX · SIH26104</span>
+    <span>Lane 4 · 31 Aug 2026</span>
+    <span>Metric is EER, not accuracy</span>
+    <span>Never train on eval or In-the-Wild</span>
+  </div>
+
+</div>
+
+</body>
+</html>

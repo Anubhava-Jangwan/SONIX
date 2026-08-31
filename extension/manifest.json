@@ -1,0 +1,41 @@
+{
+  "manifest_version": 3,
+  "name": "SONIX — Live Voice-Clone Detection",
+  "version": "0.1.0",
+  "description": "Monitors a Google Meet call for AI voice-clone impersonation and shows a live Green/Amber/Red risk band.",
+  "minimum_chrome_version": "116",
+
+  "permissions": [
+    "tabCapture",
+    "offscreen",
+    "activeTab",
+    "storage",
+    "scripting"
+  ],
+  "host_permissions": [
+    "http://localhost/*",
+    "http://127.0.0.1/*"
+  ],
+
+  "background": { "service_worker": "background.js" },
+
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "SONIX",
+    "default_icon": { "16": "icons/16.png", "48": "icons/48.png", "128": "icons/128.png" }
+  },
+  "icons": { "16": "icons/16.png", "48": "icons/48.png", "128": "icons/128.png" },
+
+  "content_scripts": [
+    {
+      "matches": ["https://meet.google.com/*"],
+      "js": ["content.js"],
+      "css": ["overlay.css"],
+      "run_at": "document_idle"
+    }
+  ],
+
+  "web_accessible_resources": [
+    { "resources": ["worklet.js"], "matches": ["https://meet.google.com/*"] }
+  ]
+}

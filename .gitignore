@@ -6,9 +6,24 @@ outputs/
 # python
 __pycache__/
 *.pyc
-.venv/
 .ipynb_checkpoints/
+
+# virtualenvs — ALL of them. Only `.venv/` was listed before, which left
+# `venv/` (the one that actually has torch + streamlit in it) and `.venv-1/`
+# staged by `git add .`.
+venv/
+.venv/
+.venv-1/
+.venv*/
 
 # models / caches
 *.pt
 *.npy
+
+# one-off dataset-audit scratch output (regenerate with the find/comm commands)
+expected.txt
+present.txt
+missing_eval_files.txt
+
+# local test audio (not shared)
+testcall.wav

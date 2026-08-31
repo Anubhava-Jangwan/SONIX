@@ -1,0 +1,1 @@
+"""Consent state machine (stub)"""
