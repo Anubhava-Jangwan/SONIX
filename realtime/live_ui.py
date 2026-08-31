@@ -19,8 +19,9 @@ st.markdown("""<style>.metric-box { padding: 1.5rem; border-radius: 0.5rem; back
 .score-high { color: #ff0000; font-weight: bold; } .score-low { color: #00aa00; font-weight: bold; }
 </style>""", unsafe_allow_html=True)
 
-WS_URL = st.secrets.get("ws_url", "ws://localhost:8000")
-HTTP_URL = st.secrets.get("http_url", "http://localhost:8000")
+# Use defaults (no secrets required)
+WS_URL = "ws://localhost:8000"
+HTTP_URL = "http://localhost:8000"
 
 st.sidebar.title("⚙️ SONIX Control")
 server_url = st.sidebar.text_input("Server URL", HTTP_URL)
@@ -109,7 +110,7 @@ with tab1:
             st.info("ℹ️ No active calls. Waiting for incoming calls...")
     else:
         st.error("❌ Cannot connect to server. Is it running?")
-        st.code("python -m realtime.server --mock --port 5000 --ws-port 8000")
+        st.code("python -m realtime.server --mock --ws-port 8000")
 
 # TAB 2: UPLOAD FILE
 with tab2:
@@ -195,25 +196,7 @@ with tab4:
 
         st.divider()
         st.subheader("Configuration")
-        st.code(f"WebSocket URL: {ws_url}\nHTTP URL: {server_url}\n\nEndpoints:\n- ws://<host>:8000/ws\n- http://<host>:8000/api/status\n- http://<host>:8000/api/score-file")
-
-        st.divider()
-        st.subheader("Quick Start")
-        st.markdown("""
-**1. Start the server:**
-```bash
-python -m realtime.server --mock --port 5000 --ws-port 8000
-```
-
-**2. Simulate a call:**
-Upload a WAV file in the "Upload File" tab
-
-**3. Approve pairing:**
-Click "Approve" to start scoring
-
-**4. Watch real-time scores:**
-Score timeline updates every 0.5 seconds
-        """)
+        st.code(f"WebSocket URL: {ws_url}\nHTTP URL: {server_url}")
     else:
         st.error("❌ Cannot connect to server")
         st.code("python -m realtime.server --mock --ws-port 8000")
