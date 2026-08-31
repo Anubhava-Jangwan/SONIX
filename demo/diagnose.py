@@ -29,6 +29,14 @@ def main():
     if "--vad-db" in sys.argv:
         vad_db = float(sys.argv[sys.argv.index("--vad-db") + 1])
 
+    # A diagnostic must show the RAW model behaviour, so the silence gate is
+    # switched OFF here even though the demo runs with it ON. The speech vs
+    # silence summary below is what tells us whether the gate is the right fix.
+    try:
+        S.set_vad(enabled=False)
+    except AttributeError:
+        pass
+
     ckpts = ["outputs/models/head.pt"]
     if S.checkpoint_available("outputs/models/head_aug.pt"):
         ckpts.append("outputs/models/head_aug.pt")

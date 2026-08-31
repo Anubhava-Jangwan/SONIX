@@ -105,8 +105,14 @@ def main(argv=None) -> int:
     out.mkdir(parents=True, exist_ok=True)
     np.save(out / f"{args.split}_labels.npy", y.astype(np.int64))
     np.save(out / f"{args.split}_scores.npy", scores.astype(np.float32))
+    # Raw logits too: sigmoid() saturates to exactly 1.0 in float32, so the
+    # logits CANNOT be recovered from the scores afterwards. Calibration
+    # (temperature scaling) needs them, so they are saved at source.
+    np.save(out / f"{args.split}_logits.npy",
+            logits.cpu().numpy().astype(np.float32))
     print(f"saved -> {out / (args.split + '_labels.npy')}  and  "
-          f"{args.split}_scores.npy  (hand these to Yukti)")
+          f"{args.split}_scores.npy  and  {args.split}_logits.npy"
+          f"  (hand these to Yukti)")
 
     e, thr = eer(y, scores)
     print("=" * 56)

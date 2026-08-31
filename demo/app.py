@@ -235,6 +235,14 @@ with st.sidebar:
     st.caption("Defaults are the data-driven thresholds from the eval score "
                "distribution (amber 0.10, red 0.90).")
     st.divider()
+    vad_on = st.checkbox(
+        "Ignore silent windows (VAD)", value=True,
+        help="Near-silent chunks are not scored by the model. This removes the "
+             "main cause of false alarms on quiet, genuine recordings.")
+    vad_db = st.slider("Silence threshold (dBFS)", -60.0, -25.0, -45.0, 1.0,
+                       disabled=not vad_on,
+                       help="Windows quieter than this are treated as no-speech.")
+    st.divider()
     mode_label = st.radio(
         "Scoring mode",
         ["Real model (live stream)", "Mock streaming"],
@@ -247,6 +255,13 @@ with st.sidebar:
     st.markdown("**Checkpoints**")
     st.markdown(f"- Baseline `head.pt`: {'✅ found' if baseline_ok else '❌ missing'}")
     st.markdown(f"- Augmented `head_aug.pt`: {'✅ found' if augmented_ok else '❌ not trained yet'}")
+
+# Apply the silence gate to the real-model path before any scoring happens.
+try:
+    from score_file import set_vad
+    set_vad(enabled=vad_on, dbfs=vad_db)
+except Exception:
+    pass
 
 uploaded = st.file_uploader("Choose a .wav or .flac call recording", type=["wav", "flac"])
 if uploaded is None:

@@ -92,9 +92,13 @@ def main(argv=None) -> int:
 
     ap = argparse.ArgumentParser(description="Train the SONIX MLP head.")
     ap.add_argument("--emb-root", default="outputs/embeddings")
-    ap.add_argument("--extra-emb-root", default=None,
-                    help="second embeddings root (e.g. outputs/embeddings_g711) "
-                         "whose train/dev are added for codec augmentation")
+    ap.add_argument("--extra-emb-root", default=None, action="append",
+                    metavar="ROOT",
+                    help="extra embeddings root whose train (and dev, if present) "
+                         "is concatenated for augmentation. REPEATABLE - pass it "
+                         "once per root, e.g. --extra-emb-root outputs/embeddings_g711 "
+                         "--extra-emb-root outputs/embeddings_rawboost "
+                         "--extra-emb-root outputs/embeddings_real")
     ap.add_argument("--out", default="outputs/models/head.pt")
     ap.add_argument("--epochs", type=int, default=20)
     ap.add_argument("--lr", type=float, default=1e-3)
@@ -121,16 +125,20 @@ def main(argv=None) -> int:
     # Its train (and dev, if present) are concatenated so the head sees both
     # clean and phone-compressed audio. This is how you make the AUGMENTED model.
     if args.extra_emb_root:
-        Xe, ye = load_split(args.extra_emb_root, "train")
-        Xtr = np.concatenate([Xtr, Xe], 0)
-        ytr = np.concatenate([ytr, ye], 0)
-        try:
-            Xde, yde = load_split(args.extra_emb_root, "dev")
-            Xdv = np.concatenate([Xdv, Xde], 0)
-            ydv = np.concatenate([ydv, yde], 0)
-        except SystemExit:
-            print("[aug] no codec dev split found; keeping dev clean for early stopping")
-        print(f"[aug] augmented train set: {len(Xtr)} vectors (clean + codec)")
+        for _root in args.extra_emb_root:
+            Xe, ye = load_split(_root, "train")
+            Xtr = np.concatenate([Xtr, Xe], 0)
+            ytr = np.concatenate([ytr, ye], 0)
+            try:
+                Xde, yde = load_split(_root, "dev")
+                Xdv = np.concatenate([Xdv, Xde], 0)
+                ydv = np.concatenate([ydv, yde], 0)
+            except SystemExit:
+                print(f"[aug] {_root}: no dev split found; leaving dev as-is "
+                      f"for early stopping")
+        print(f"[aug] augmented train set: {len(Xtr)} vectors from "
+              f"{1 + len(args.extra_emb_root)} roots  "
+              f"(spoof={int((ytr == 1).sum())}, bonafide={int((ytr == 0).sum())})")
 
     # ---- input standardiser (train stats only) ---------------------------
     if args.no_standardize:
