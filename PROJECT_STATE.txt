@@ -1,0 +1,181 @@
+SONIX (SIH26104) - CURRENT STATE
+Generated 2026-08-31. Every claim below was verified by running it on this
+machine, not read off documentation. Where a number appears, the command that
+produced it is named so it can be re-checked.
+
+====================================================================
+1. WHAT THE PROJECT IS
+====================================================================
+Real-time detection of AI voice-cloning on phone calls.
+
+Pipeline: 4-second audio window -> frozen wav2vec2 XLS-R (300M) front-end
+-> 1024-dim embedding (mean-pooled over time) -> small trained MLP head
+(~300k params) -> risk score. Only the head is trained; the front-end is
+frozen and never fine-tuned.
+
+Headline metric is EER (equal error rate), NOT accuracy. Always reported as
+"X% on <split name>", never as a bare number.
+
+Repo layout that matters:
+  extract_embeddings.py       audio -> embedding shards (the slow step)
+  src/verify_protocol.py      dataset/protocol gate, run before anything
+  src/train.py                trains the MLP head
+  src/eval.py                 produces the EER number
+  src/score_file.py           score_file(wav) -> list[float]
+  src/make_codec.py           codec-robustness degradation
+  make_codec.py               second copy at repo root
+  demo/                       Streamlit UI (10 files)
+  _anubhav_sample/            60-file mini dataset, real --data-root layout
+
+====================================================================
+2. REPO STATE - MERGE IN PROGRESS, NOT COMMITTED
+====================================================================
+Branch anubhav/data-extraction is mid-merge with origin/main.
+Fork point: dd1f23c. 76 files staged, nothing committed yet.
+
+  Your side  (d3a3bf3, b65a49c by Anubhava)
+    b65a49c  crash/corruption fixes in extraction, eval, codec
+    d3a3bf3  labelled "remove old files" but REMOVES NOTHING - it only adds
+             .serena/ and testcall.wav. Misleading message.
+
+  Their side (45f8709, 9179563 by croakie-ai / Yugal)
+    demo/ (10 files), make_codec.py, _anubhav_sample/ (61 files),
+    edits to src/train.py, src/score_file.py, src/extract_embeddings.py
+
+RENAME/EDIT COLLISION, resolved but silently. At the fork point the file was
+src/extract_embeddings.py. Anubhav MOVED it to repo root; Yugal EDITED it in
+place at src/. Git's rename detection folded Yugal's changes into the moved
+copy. His --audio-dir mode did survive - _build_manifest_dir at
+extract_embeddings.py:77 and the argparse flag at :401 are both present.
+This resolved correctly but produced no conflict marker, so it was never
+reviewed. Worth a read-through before committing.
+
+Net effect: src/extract_embeddings.py is GONE, root extract_embeddings.py is
+canonical. This contradicts CLAUDE.md and README, which still describe the
+old layout.
+
+====================================================================
+3. THE BLOCKING BUG - fp16 PRODUCES 100% NaN
+====================================================================
+extract_embeddings.py:200 calls model.half() whenever the device is CUDA.
+On this machine that yields embeddings that are entirely NaN.
+
+Same file, same GPU, three paths:
+    cuda/fp16    nan=1024/1024   range=n/a
+    cuda/fp32    nan=   0/1024   range=-0.9028..0.8091
+    cpu /fp32    nan=   0/1024   range=-0.9028..0.8091
+
+CUDA fp32 matches CPU bit-for-bit, so the model, the audio and the GPU are
+all fine. The cause is the blanket fp16 cast: wav2vec2's conv feature encoder
+overflows fp16's 65504 ceiling. Usual fix is torch.autocast instead of
+.half(), which keeps norm layers in fp32.
+
+THE FAILURE IS SILENT. A 50-file smoke run reported:
+    [eval] DONE. succeeded=50  skipped(bad)=0  already_cached=0  total=50
+    [eval] first written shard shape = (50, 1024)  (expect (*, 1024))
+while every one of the 51200 values was NaN. The script's self-check
+validates shape only, never finiteness. This is how dead data gets cached as
+"done" and why the bug survived this long.
+
+NOT YET FIXED. extract_embeddings.py is Yugal's lane and his scoring step
+depends on its exact output format, so the fix is his call. Two changes are
+wanted: the .half() precision fix, and a finiteness assert so this can never
+again pass as success.
+
+====================================================================
+4. STATE OF THE CACHED EMBEDDINGS
+====================================================================
+outputs/embeddings/eval
+    713 shard files: 494 EMPTY, 213 clean, 6 all-NaN
+    21794 clips extracted, 550 NaN (2.5%), 21244 usable
+outputs/embeddings_g711
+    4 shards, 350 clips, 350 NaN - 100% dead, entirely unusable
+
+The eval cache mostly survived, so past runs hit a working path; today's runs
+do not. The 494 empty shards and the 21794 total are the partial-dataset
+symptom CLAUDE.md already documents (a 21844/71933 pendrive copy).
+
+====================================================================
+5. WHAT RUNS AND WHAT DOES NOT
+====================================================================
+WORKS
+  - src/verify_protocol.py parses correctly. Against _anubhav_sample it reads
+    60 lines, 8 bonafide / 52 spoof, all files present, attacks A07-A18.
+  - extract_embeddings.py runs end to end: 50/50 files, 0 bad, correct
+    (50, 1024) shape, ~2.1 files/sec on the GPU. Output is numerically dead.
+  - demo/ in Mock streaming mode. Its own tests pass:
+        PASS: 30-second audio -> 54 padded windows
+        PASS: smoothing + hysteresis + warm-up
+        PASS: score stream yields one result at a time
+    Serves HTTP 200 on localhost:8501.
+
+BLOCKED
+  - The gate FAILS, but not from a bug: there is no data/ directory at all.
+    The full ASVspoof2019 LA set is not on this machine, so the 60-file
+    sample fails the known-good comparison (60 != 71237 expected lines).
+  - No real EER number can be produced. No training, no eval.
+  - Demo real mode ("Yugal live score stream") raises rather than degrading:
+    it needs outputs/models/head.pt and NO .pt file exists anywhere in the
+    repo. The trained head has never been committed or produced here.
+  - Any real run is pointless until data/ is restored - 69% of eval is absent.
+
+====================================================================
+6. UNRESOLVED DESIGN QUESTIONS
+====================================================================
+  - demo/score_file.py and src/score_file.py BOTH exist and BOTH changed in
+    this merge. The integration contract score_file(wav) -> list[float] has
+    two implementations and it is unsettled which one real mode binds to.
+  - make_codec.py exists at repo root AND at src/make_codec.py.
+  - CLAUDE.md and README describe a run order that no longer matches the
+    post-merge file layout.
+
+====================================================================
+7. ENVIRONMENT (verified)
+====================================================================
+Windows 11, shell is Git Bash (MINGW64). Repo at B:\SIH_sonix.
+Python 3.13.1 / torch 2.13.0+cu126 / transformers 5.16.1
+numpy 2.5.2 / scipy 1.18.1 / soundfile 0.14.0
+streamlit 1.62.0 / matplotlib 3.11.1  (installed 2026-08-31; the demo had
+    never been run on this machine before)
+GPU: NVIDIA GeForce GTX 1650, CUDA available.
+wav2vec2-xls-r-300m is already in the HuggingFace cache - no download needed.
+
+THREE virtualenvs, only one usable:
+    venv     4579 MB  HAS torch      <- the live environment, use this one
+    .venv-1   489 MB  no torch
+    .venv      24 MB  BROKEN, no pyvenv.cfg, cannot be activated
+
+====================================================================
+8. TEAM LANES (do not edit across them)
+====================================================================
+  Yugal    - all ML: train.py, model architecture, head.pt.
+             extract_embeddings.py changes go through him.
+  Anubhav  - eval-split extraction, codec-robustness runs, opening pitch.
+  Suryansh - demo UI, windowing/smoothing/hysteresis, score_file integration.
+  Navya/Akshat - In-the-Wild extraction, TTS demo audio.
+  Yukti    - metrics.py, EER validation, score plots, results table.
+
+STANDING RULES: never invent a number; paste full tracebacks, not paraphrases;
+don't modify a handed-over script without asking; embedding extraction is the
+expensive step, so resume, never re-extract from scratch.
+
+====================================================================
+9. HOW TO READ AN EER, ONCE ONE EXISTS
+====================================================================
+  low single digits          working
+  ~40%                       bug, almost always protocol parse or flipped
+                             label - re-run the gate
+  exactly 0%                 eval leaked into training
+  In-the-Wild or codec-degraded much worse than clean eval
+                             EXPECTED. This is the project's headline
+                             generalization-gap finding, not a bug to hide.
+
+====================================================================
+10. SHORT VERSION
+====================================================================
+The plumbing is built and runs end to end. Nothing it currently produces on
+GPU is numerically valid, because of one line (model.half()) whose failure
+mode is invisible to the script's own success check. The dataset is 69%
+absent and the trained head does not exist, so no EER has been produced on
+this machine. The demo works, but only against mock scores. Fix the
+precision bug, add a finiteness assert, restore the dataset, then extract.
