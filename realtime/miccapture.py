@@ -49,6 +49,12 @@ PAGE = r"""<!doctype html>
   .stat b{color:var(--ink);font-weight:600;font-variant-numeric:tabular-nums}
   .warn{background:#2a2410;border:1px solid #6b5518;color:#fab219;padding:10px 12px;
         border-radius:8px;font-size:13px;margin-top:18px}
+  .band{margin:18px 0 10px;padding:14px;border-radius:10px;border:1px solid var(--line);
+        background:#141413;text-align:center}
+  .verdict{font-size:26px;font-weight:700;line-height:1.2;font-variant-numeric:tabular-nums}
+  .why{color:var(--muted);font-size:12px;margin-top:5px}
+  canvas#spec{width:100%;height:140px;display:block;margin-top:6px;border-radius:8px;
+              background:#0a0a0a;border:1px solid var(--line)}
 </style>
 <div class="card">
   <h1>SONIX &mdash; microphone capture</h1>
@@ -74,6 +80,14 @@ PAGE = r"""<!doctype html>
   <div class="stat"><span>Audio sent</span><b id="sent">0.0 s</b></div>
   <div class="stat"><span>State</span><b id="callstate">&mdash;</b></div>
 
+  <div class="band">
+    <div class="verdict" id="verdict">&mdash;</div>
+    <div class="why" id="why">Waiting for the first 4-second window.</div>
+  </div>
+
+  <div class="label">Spectrogram &mdash; tinted by the live risk band</div>
+  <canvas id="spec" height="140"></canvas>
+
   <div class="warn" id="warn" style="display:none"></div>
 </div>
 
@@ -83,6 +97,58 @@ const TARGET_SR = 16000;
 
 let ws = null, ctx = null, node = null, stream = null, running = false;
 let sentSamples = 0, callId = null;
+
+// Must match AMBER_AT / RED_AT in realtime/live_ui.py - the dashboard and this
+// page are two views of the same decision, and they must not disagree.
+const AMBER_AT = 0.35, RED_AT = 0.65;
+let analyser = null, specFrame = null, scoringAvailable = false, lastScore = null;
+
+// [name, css colour, rgb triple for the spectrogram tint]
+function bandFor(s){
+  if (s === null)     return ["—", "var(--muted)",    [137,135,129]];
+  if (s >= RED_AT)    return ["Red",     "var(--critical)", [208, 59, 59]];
+  if (s >= AMBER_AT)  return ["Amber",   "var(--warning)",  [250,178, 25]];
+  return                     ["Green",   "var(--good)",     [ 12,163, 12]];
+}
+
+function renderBand(){
+  const v = $("verdict"), why = $("why");
+  if (!scoringAvailable){
+    v.textContent = "Scoring unavailable";
+    v.style.color = "var(--muted)";
+    why.textContent = "Server is running without a trained head (--ckpt). Capture is live; no verdict is shown.";
+    return;
+  }
+  const [name, colour] = bandFor(lastScore);
+  v.style.color = colour;
+  if (lastScore === null){
+    v.textContent = "—";
+    why.textContent = "Waiting for the first 4-second window.";
+    return;
+  }
+  v.textContent = name + " · " + Math.round(lastScore * 100) + "%";
+  why.textContent = "P(AI voice) over the last 4 s. Amber ≥ 35%, Red ≥ 65% — provisional thresholds.";
+}
+
+// Scrolling spectrogram: one 2px column per frame, newest on the right.
+// Tint carries the risk band, so the danger level is readable off the plot itself.
+function drawSpec(){
+  const c = $("spec"), g = c.getContext("2d"), w = c.width, h = c.height, col = 2;
+  const bins = new Uint8Array(analyser.frequencyBinCount);
+  analyser.getByteFrequencyData(bins);
+
+  g.drawImage(c, -col, 0);
+  g.clearRect(w - col, 0, col, h);
+
+  const rgb = bandFor(scoringAvailable ? lastScore : null)[2];
+  for (let y = 0; y < h; y++){
+    const mag = bins[Math.floor((1 - y / h) * (bins.length - 1))] / 255;
+    if (mag <= 0.02) continue;
+    g.fillStyle = "rgba(" + rgb[0] + "," + rgb[1] + "," + rgb[2] + "," + mag.toFixed(3) + ")";
+    g.fillRect(w - col, y, col, 1);
+  }
+  specFrame = requestAnimationFrame(drawSpec);
+}
 
 const $ = id => document.getElementById(id);
 function setStatus(text, cls){ $("status").textContent = text; $("dot").className = "dot " + (cls||""); }
@@ -120,6 +186,13 @@ async function start(){
     return;
   }
 
+  // The server decides whether a verdict may be shown at all; a mock number must
+  // never reach the screen dressed as one.
+  try {
+    scoringAvailable = !!(await (await fetch("/api/status")).json()).scoring_available;
+  } catch { scoringAvailable = false; }
+  renderBand();
+
   // Ask for 16 kHz directly. Chrome/Edge honour this; if not, we resample below.
   ctx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: TARGET_SR });
   await ctx.audioWorklet.addModule(URL.createObjectURL(new Blob([WORKLET], {type:"application/javascript"})));
@@ -147,6 +220,10 @@ async function start(){
     if (m.type === "pairing_request" && m.call_id === callId){
       $("code").textContent = m.pairing_code;
     }
+    if (m.type === "scores" && callId && m.data && m.data[callId]){
+      lastScore = m.data[callId].score;
+      renderBand();
+    }
     if (m.type === "call_state" && m.call_id === callId){
       $("callstate").textContent = m.state.toUpperCase();
       if (m.state === "listening" || m.state === "scoring"){
@@ -161,6 +238,16 @@ async function start(){
 
   const src = ctx.createMediaStreamSource(stream);
   node = new AudioWorkletNode(ctx, "cap");
+
+  analyser = ctx.createAnalyser();
+  analyser.fftSize = 512;               // 256 bins over 0-8 kHz at 16 kHz
+  analyser.smoothingTimeConstant = 0.6;
+  src.connect(analyser);
+
+  const c = $("spec");
+  c.width = c.clientWidth || 460;       // match CSS width, else the plot stretches
+  c.getContext("2d").clearRect(0, 0, c.width, c.height);
+  drawSpec();
 
   node.port.onmessage = ev => {
     const f32 = ev.data;
@@ -192,6 +279,10 @@ function stop(){
     if (callId) ws.send(JSON.stringify({ type:"end_call", call_id: callId }));
     ws.close();
   }
+  if (specFrame) cancelAnimationFrame(specFrame);
+  specFrame = analyser = null;
+  lastScore = null;
+  renderBand();
   if (node) node.disconnect();
   if (stream) stream.getTracks().forEach(t => t.stop());
   if (ctx) ctx.close();
