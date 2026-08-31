@@ -67,9 +67,10 @@ def main() -> int:
     clips_dir = Path(args.clips_dir)
     if not clips_dir.is_dir():
         sys.exit(f"FATAL: --clips-dir not found: {clips_dir.resolve()}")
-    clips = sorted(list(clips_dir.glob("*.wav")) + list(clips_dir.glob("*.flac")))
+    clips = sorted(c for ext in ("*.wav", "*.flac", "*.ogg", "*.opus")
+                   for c in clips_dir.glob(ext))
     if not clips:
-        sys.exit(f"FATAL: no .wav/.flac in {clips_dir.resolve()}")
+        sys.exit(f"FATAL: no .wav/.flac/.ogg in {clips_dir.resolve()}")
 
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)

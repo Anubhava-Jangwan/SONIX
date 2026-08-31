@@ -1,0 +1,25 @@
+{
+ "clip": "fake_07.wav",
+ "model": "C:\\Users\\yugal\\OneDrive\\Desktop\\Sonix\\outputs\\models\\head_robust.pt",
+ "win_s": 4.0,
+ "hop_s": 0.5,
+ "vad": {
+  "enabled": true,
+  "dbfs": -45.0,
+  "silence_score": 0.0
+ },
+ "generated": "2026-09-01T02:06:47",
+ "scores": [
+  0.999997,
+  1.0,
+  0.999997,
+  0.999951,
+  0.999925,
+  0.999998,
+  0.999999,
+  0.999934,
+  0.999987,
+  0.999352,
+  0.999979
+ ]
+}

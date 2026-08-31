@@ -71,8 +71,10 @@ def main() -> int:
     print(f"  windows={n_full}  mean={a.mean():.4f}  median={np.median(a):.4f}  "
           f"max={a.max():.4f}  >=0.90: {(a >= 0.90).mean()*100:.0f}%\n")
 
-    # (b) short excerpts -> ZERO-PADDED windows, exactly like training
-    print("--- (b) SHORT EXCERPTS from the same audio (windows are ZERO-PADDED) ---")
+    # (b)+(c) short excerpts, scored TWO ways from the SAME cut positions:
+    #   (b) zero-padded by hand  = the OLD behaviour
+    #   (c) through S._windows() = the PRODUCTION path (repeat-padded now)
+    print("--- (b) OLD zero-padding   vs   (c) PRODUCTION path ---")
     rng = np.random.default_rng(1337)
     rows = []
     for secs in [float(s) for s in args.excerpt_secs.split(",")]:
@@ -80,23 +82,27 @@ def main() -> int:
         if n >= len(wav):
             print(f"  {secs:.0f}s: recording too short to excerpt")
             continue
-        means = []
+        old_means, new_means = [], []
         for _ in range(args.n_excerpts):
             st = int(rng.integers(0, len(wav) - n))
             chunk = wav[st:st + n]
-            w = np.zeros(WIN, dtype=np.float32)      # zero-pad, as training does
+            # (b) old: hand-built zero-padded window
+            w = np.zeros(WIN, dtype=np.float32)
             w[:len(chunk)] = chunk
-            means.append(S._score_windows([w], ckpt)[0])
-        m = float(np.mean(means))
-        rows.append((secs, m))
-        print(f"  {secs:.0f}s excerpts (n={args.n_excerpts}): mean={m:.4f}   "
-              f"[{', '.join(f'{v:.3f}' for v in means)}]")
+            old_means.append(S._score_windows([w], ckpt)[0])
+            # (c) new: exactly what the demo does with this audio
+            wins = list(S._windows(chunk))
+            new_means.append(float(np.mean(S._score_windows(wins, ckpt))))
+        om, nm = float(np.mean(old_means)), float(np.mean(new_means))
+        rows.append((secs, om, nm))
+        print(f"  {secs:.0f}s  zero-pad={om:.4f}   production={nm:.4f}   "
+              f"{'IMPROVED' if nm < om - 0.02 else 'no change' if abs(nm-om) <= 0.02 else 'WORSE'}")
 
     print("\n" + "=" * 62)
     full_mean = float(a.mean())
     print(f"full-length mean = {full_mean:.4f}")
-    for secs, m in rows:
-        print(f"{secs:.0f}s padded excerpt mean = {m:.4f}")
+    for secs, om, nm in rows:
+        print(f"{secs:.0f}s  old zero-pad = {om:.4f}   production = {nm:.4f}")
     print("=" * 62)
 
     print(f"ground truth: {args.label.upper()}")
@@ -104,7 +110,19 @@ def main() -> int:
 
     if not rows:
         return 0
-    best = min(m for _, m in rows)
+    best = min(nm for _, _, nm in rows)
+    old_best = min(om for _, om, _ in rows)
+    gain = old_best - best
+
+    if gain > 0.02:
+        print(f"PADDING FIX IS WORKING: short clips improved by {gain:.3f} "
+              f"({old_best:.3f} -> {best:.3f}).")
+    elif gain < -0.02:
+        print(f"WARNING: the padding change made short clips WORSE "
+              f"({old_best:.3f} -> {best:.3f}). Tell me.")
+    else:
+        print("Padding change made little difference on this clip.")
+    print()
 
     if args.label == "fake":
         if full_mean > 0.70 and best > 0.70:

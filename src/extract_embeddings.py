@@ -154,19 +154,28 @@ def _build_manifest_itw(itw_root):
 # Audio loading  ->  exactly 64,000 samples, 16 kHz, mono, float32
 # ===========================================================================
 def load_audio_fixed(path: str) -> np.ndarray:
-    import soundfile as sf
-    wav, sr = sf.read(path, dtype="float32", always_2d=False)
-    if wav.ndim > 1:                       # stereo -> mono
-        wav = wav.mean(axis=1)
-    if sr != TARGET_SR:
-        wav = _resample(wav, sr, TARGET_SR)
+    import subprocess
+
+    cmd = [
+        "ffmpeg",
+        "-v", "error",
+        "-i", str(path),
+        "-f", "f32le",
+        "-acodec", "pcm_f32le",
+        "-ac", "1",
+        "-ar", str(TARGET_SR),
+        "-"
+    ]
+
+    raw = subprocess.check_output(cmd)
+    wav = np.frombuffer(raw, dtype=np.float32)
+
     if len(wav) >= TARGET_LEN:
         wav = wav[:TARGET_LEN]
     else:
         wav = np.pad(wav, (0, TARGET_LEN - len(wav)))
+
     return np.ascontiguousarray(wav, dtype=np.float32)
-
-
 def _resample(wav, sr_in, sr_out):
     # ASVspoof and In-the-Wild are already 16 kHz, so this rarely runs. Use
     # torchaudio's high-quality resampler when available; fall back to linear.

@@ -1,0 +1,73 @@
+{
+ "model": "C:\\Users\\yugal\\OneDrive\\Desktop\\Sonix\\outputs\\models\\head.pt",
+ "amber": 0.1,
+ "red": 0.9,
+ "vad": {
+  "enabled": true,
+  "dbfs": -45.0,
+  "silence_score": 0.0
+ },
+ "generated": "2026-09-01T02:40:11",
+ "clips": [
+  {
+   "clip": "real_01.wav",
+   "scores_file": "real_01.json",
+   "windows": 230,
+   "final_band": "GREEN"
+  },
+  {
+   "clip": "real_02.wav",
+   "scores_file": "real_02.json",
+   "windows": 250,
+   "final_band": "GREEN"
+  },
+  {
+   "clip": "real_03.wav",
+   "scores_file": "real_03.json",
+   "windows": 316,
+   "final_band": "GREEN"
+  },
+  {
+   "clip": "real_04.wav",
+   "scores_file": "real_04.json",
+   "windows": 177,
+   "final_band": "GREEN"
+  },
+  {
+   "clip": "real_05.wav",
+   "scores_file": "real_05.json",
+   "windows": 297,
+   "final_band": "GREEN"
+  },
+  {
+   "clip": "real_06.wav",
+   "scores_file": "real_06.json",
+   "windows": 310,
+   "final_band": "GREEN"
+  },
+  {
+   "clip": "real_07.wav",
+   "scores_file": "real_07.json",
+   "windows": 125,
+   "final_band": "GREEN"
+  },
+  {
+   "clip": "real_08.wav",
+   "scores_file": "real_08.json",
+   "windows": 179,
+   "final_band": "AMBER"
+  },
+  {
+   "clip": "real_09.wav",
+   "scores_file": "real_09.json",
+   "windows": 310,
+   "final_band": "AMBER"
+  },
+  {
+   "clip": "real_10.wav",
+   "scores_file": "real_10.json",
+   "windows": 228,
+   "final_band": "AMBER"
+  }
+ ]
+}

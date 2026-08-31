@@ -24,6 +24,7 @@ BG = "#0d1117"
 # streamlit is launched from demo/ or the repo root.
 BASELINE_CKPT = "outputs/models/head.pt"
 AUGMENTED_CKPT = "outputs/models/head_aug.pt"
+ROBUST_CKPT = "outputs/models/head_robust.pt"
 
 TRAIN_AUG_CMD = (
     "python src/train.py --emb-root outputs/embeddings "
@@ -225,8 +226,9 @@ try:
     from score_file import checkpoint_available
     baseline_ok = checkpoint_available(BASELINE_CKPT)
     augmented_ok = checkpoint_available(AUGMENTED_CKPT)
+    robust_ok = checkpoint_available(ROBUST_CKPT)
 except Exception:
-    baseline_ok = augmented_ok = False
+    baseline_ok = augmented_ok = robust_ok = False
 
 with st.sidebar:
     st.header("Detection settings")
@@ -255,6 +257,7 @@ with st.sidebar:
     st.markdown("**Checkpoints**")
     st.markdown(f"- Baseline `head.pt`: {'✅ found' if baseline_ok else '❌ missing'}")
     st.markdown(f"- Augmented `head_aug.pt`: {'✅ found' if augmented_ok else '❌ not trained yet'}")
+    st.markdown(f"- Robust `head_robust.pt`: {'✅ found' if robust_ok else '❌ not trained yet'}")
 
 # Apply the silence gate to the real-model path before any scoring happens.
 try:
@@ -292,7 +295,8 @@ st.info(
     "one window at a time, exactly like a live call."
 )
 
-tab_base, tab_aug = st.tabs(["🛡️ Baseline model", "🧪 Augmented (codec-robust)"])
+tab_base, tab_aug, tab_rob = st.tabs(
+    ["🛡️ Baseline model", "🧪 Augmented (codec)", "🏆 Robust (codec + RawBoost)"])
 
 with tab_base:
     st.markdown(
@@ -333,6 +337,29 @@ with tab_aug:
             )
         else:
             st.caption("Press Run to stream this clip through the augmented model.")
+
+with tab_rob:
+    st.markdown(
+        "**Robust head** — trained on clean **+ G.711 phone codec + RawBoost** "
+        "(simulated microphones, channels and noise). This is our most heavily "
+        "augmented model, meant to hold up on unfamiliar recording conditions."
+    )
+    if mode == "real" and not robust_ok:
+        st.warning("The robust model `head_robust.pt` isn't trained yet.")
+        st.code("python src/train.py --emb-root outputs/embeddings "
+                "--extra-emb-root outputs/embeddings_g711 "
+                "--extra-emb-root outputs/embeddings_rawboost "
+                "--out outputs/models/head_robust.pt", language="bash")
+    else:
+        if st.button("▶ Run robust analysis", type="primary",
+                     use_container_width=True, key="run_rob"):
+            run_analysis(
+                mode=mode, ckpt_path=ROBUST_CKPT, model_label="Robust",
+                name=name, raw_bytes=raw_bytes, duration_s=duration_s,
+                windows_count=windows_count, amber=amber, red=red,
+            )
+        else:
+            st.caption("Press Run to stream this clip through the robust model.")
 
 st.divider()
 st.caption(
