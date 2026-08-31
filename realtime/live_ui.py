@@ -194,10 +194,9 @@ with tab1:
                 "and passed with `--ckpt`, so no mock number is ever shown as a verdict."
             )
 
-        st.caption(
-            f"Microphone capture page: {server_url}/mic  ·  "
-            "open it in Chrome or Edge on this machine and press Start capture."
-        )
+        st.link_button("🎤  Open microphone capture", f"{server_url}/mic")
+        st.caption("Opens in a new tab — Chrome or Edge, on this machine. "
+                   "Press Start capture there, then approve the pairing code below.")
         st.divider()
 
         if not calls:
