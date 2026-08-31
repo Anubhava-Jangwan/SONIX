@@ -116,29 +116,50 @@ def _windows(wav):
         yield w
 
 
-def score_file(wav_path, batch=8) -> list:
-    """One calibrated fake-probability per 4 s window (0.5 s hop). Higher = faker."""
-    _lazy_load()
+def _score_windows(wins) -> list:
+    """Score a list of 64000-sample windows -> list[float] fake-probabilities.
+    Shared by score_file (batched, offline) and score_stream (one at a time, live)."""
     torch = _STATE["torch"]
     fe, frontend, head, device = (_STATE["fe"], _STATE["frontend"],
                                   _STATE["head"], _STATE["device"])
     mu, sd = _STATE["mu"], _STATE["sd"]
+    inputs = fe(list(wins), sampling_rate=TARGET_SR, return_tensors="pt",
+                padding=True)
+    iv = inputs["input_values"].to(device)
+    with torch.no_grad():
+        hidden = frontend(iv).last_hidden_state              # (b, T, 1024)
+        pooled = hidden.mean(dim=1).cpu().numpy().astype(np.float32)
+        pooled = (pooled - mu) / sd
+        logits = head(torch.from_numpy(pooled).float().to(device)).squeeze(1)
+        probs = torch.sigmoid(logits).cpu().numpy()
+    return [float(p) for p in probs]
 
+
+def score_file(wav_path, batch=8) -> list:
+    """OFFLINE interface: one calibrated fake-probability per 4 s window (0.5 s
+    hop) as a full list. Higher = faker. Use for benchmarking / the older UI."""
+    _lazy_load()
     wav = _load_audio(wav_path)
     wins = list(_windows(wav))
     scores = []
     for i in range(0, len(wins), batch):
-        mb = wins[i:i + batch]
-        inputs = fe(mb, sampling_rate=TARGET_SR, return_tensors="pt", padding=True)
-        iv = inputs["input_values"].to(device)
-        with torch.no_grad():
-            hidden = frontend(iv).last_hidden_state          # (b, T, 1024)
-            pooled = hidden.mean(dim=1).cpu().numpy().astype(np.float32)
-            pooled = (pooled - mu) / sd
-            logits = head(torch.from_numpy(pooled).float().to(device)).squeeze(1)
-            probs = torch.sigmoid(logits).cpu().numpy()
-        scores.extend(float(p) for p in probs)
+        scores.extend(_score_windows(wins[i:i + batch]))
     return scores
+
+
+def score_stream(wav_path):
+    """LIVE interface (Suryansh's v9 contract): a generator that yields ONE
+    fake-probability per 4 s window, in order, computing each on the fly. The
+    model is loaded once (via _lazy_load) and stays resident for the whole call.
+    Higher = more likely fake.
+
+        for score in score_stream("call.wav"):
+            ...   # UI updates as each window's score arrives
+    """
+    _lazy_load()
+    wav = _load_audio(wav_path)
+    for w in _windows(wav):
+        yield _score_windows([w])[0]
 
 
 if __name__ == "__main__":

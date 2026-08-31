@@ -92,6 +92,9 @@ def main(argv=None) -> int:
 
     ap = argparse.ArgumentParser(description="Train the SONIX MLP head.")
     ap.add_argument("--emb-root", default="outputs/embeddings")
+    ap.add_argument("--extra-emb-root", default=None,
+                    help="second embeddings root (e.g. outputs/embeddings_g711) "
+                         "whose train/dev are added for codec augmentation")
     ap.add_argument("--out", default="outputs/models/head.pt")
     ap.add_argument("--epochs", type=int, default=20)
     ap.add_argument("--lr", type=float, default=1e-3)
@@ -112,6 +115,22 @@ def main(argv=None) -> int:
 
     Xtr, ytr = load_split(args.emb_root, "train")
     Xdv, ydv = load_split(args.emb_root, "dev")
+
+    # ---- codec augmentation: also train on codec'd copies -----------------
+    # Point --extra-emb-root at a second embeddings root (e.g. the G.711 one).
+    # Its train (and dev, if present) are concatenated so the head sees both
+    # clean and phone-compressed audio. This is how you make the AUGMENTED model.
+    if args.extra_emb_root:
+        Xe, ye = load_split(args.extra_emb_root, "train")
+        Xtr = np.concatenate([Xtr, Xe], 0)
+        ytr = np.concatenate([ytr, ye], 0)
+        try:
+            Xde, yde = load_split(args.extra_emb_root, "dev")
+            Xdv = np.concatenate([Xdv, Xde], 0)
+            ydv = np.concatenate([ydv, yde], 0)
+        except SystemExit:
+            print("[aug] no codec dev split found; keeping dev clean for early stopping")
+        print(f"[aug] augmented train set: {len(Xtr)} vectors (clean + codec)")
 
     # ---- input standardiser (train stats only) ---------------------------
     if args.no_standardize:
