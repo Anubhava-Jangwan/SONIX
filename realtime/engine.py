@@ -63,13 +63,22 @@ class ScoringEngine:
                 continue
 
             windows = await session.get_pending_windows()
+            if not windows:
+                continue
 
+            taken = 0
             for window_idx, window in enumerate(windows):
-                embedding = await self._embed_window(window)
-                batch.append((call_id, session.window_count - len(windows) + window_idx, embedding))
-
                 if len(batch) >= self.max_batch_size:
                     break
+                embedding = await self._embed_window(window)
+                batch.append((call_id, session.window_count - len(windows) + window_idx, embedding))
+                taken += 1
+
+            # Anything we could not fit goes back on the queue rather than being
+            # dropped. get_pending_windows() already cleared it, so without this
+            # every window past max_batch_size was lost.
+            if taken < len(windows):
+                await session.requeue_windows(windows[taken:])
 
             if len(batch) >= self.max_batch_size:
                 break
@@ -126,13 +135,17 @@ class ScoringEngine:
                         await session.record_score(window_idx, score)
 
                 if self.on_broadcast:
-                    broadcast_data = {
-                        call_id: {
-                            "window_idx": window_indices[i],
-                            "score": float(scores[i])
-                        }
-                        for i, call_id in enumerate(call_ids)
-                    }
+                    # Keyed by call_id for backwards compatibility - the top-level
+                    # window_idx/score are the LATEST window for that call - with
+                    # every window of the batch preserved under "batch", so a
+                    # multi-window batch no longer loses all but one score.
+                    broadcast_data = {}
+                    for i, call_id in enumerate(call_ids):
+                        entry = broadcast_data.setdefault(call_id, {"batch": []})
+                        item = {"window_idx": window_indices[i], "score": float(scores[i])}
+                        entry["batch"].append(item)
+                        entry["window_idx"] = item["window_idx"]
+                        entry["score"] = item["score"]
                     await self.on_broadcast(broadcast_data)
 
                 self.total_windows_scored += len(call_ids)

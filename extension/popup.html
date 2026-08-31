@@ -1,0 +1,37 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>SONIX</title>
+<link rel="stylesheet" href="popup.css">
+<div class="wrap">
+  <header>
+    <span class="mark"></span>
+    <h1>SONIX</h1>
+    <span class="ver">0.1.0</span>
+  </header>
+
+  <div class="band" id="band">
+    <div class="band-label" id="bandLabel">Not monitoring</div>
+    <div class="band-sub" id="bandSub">Open a Google Meet call, then start.</div>
+  </div>
+
+  <div id="pairing" class="pairing" hidden>
+    <div class="k">Pairing code — approve in the dashboard</div>
+    <div class="code" id="code">------</div>
+  </div>
+
+  <dl class="stats">
+    <div><dt>Call</dt><dd id="callId">—</dd></div>
+    <div><dt>State</dt><dd id="callState">—</dd></div>
+    <div><dt>Windows</dt><dd id="windows">0</dd></div>
+  </dl>
+
+  <label class="field">
+    <span>Server</span>
+    <input id="server" type="text" value="http://localhost:8000" spellcheck="false">
+  </label>
+
+  <button id="toggle">Start monitoring</button>
+  <p class="err" id="err" hidden></p>
+  <p class="note">Captures this tab's audio — the other participants, not your microphone. Tell them they are being monitored.</p>
+</div>
+<script src="popup.js"></script>

@@ -111,6 +111,12 @@ class Session:
         # For ordering
         self.window_count = 0
 
+        # Per-window telemetry for the dashboard: every window the ring buffer
+        # emitted, whether or not VAD let it through. This is what makes the
+        # silence gate visible instead of something we just claim happens.
+        self.window_log: List[Dict] = []
+        self.max_window_log = 600            # ~5 min at a 0.5s hop
+
         # Log the session creation
         self._add_audit("session_created", {"call_id": call_id})
 
@@ -189,18 +195,45 @@ class Session:
         self.ringbuffer.push(samples)
         emitted = self.ringbuffer.get_emitted_windows()
 
-        # Filter by VAD
+        # Filter by VAD, logging every window either way
         for window in emitted:
-            if self.vad.is_speech(window):
+            passed = self.vad.is_speech(window)
+            stats = dict(getattr(self.vad, "last_stats", {}))
+
+            self.window_log.append({
+                "t": datetime.now().timestamp(),
+                "rms": stats.get("rms", 0.0),
+                "peak": stats.get("peak", 0.0),
+                "speech_ratio": stats.get("speech_ratio", 0.0),
+                "vad_passed": bool(passed),
+                "window_idx": self.window_count if passed else None,
+            })
+            if len(self.window_log) > self.max_window_log:
+                del self.window_log[:-self.max_window_log]
+
+            if passed:
                 self.pending_windows.append(window)
                 logger.debug(f"[{self.call_id}] Window {self.window_count} passed VAD")
                 self.window_count += 1
+            else:
+                logger.debug(f"[{self.call_id}] Window rejected by VAD (silence)")
 
     async def get_pending_windows(self) -> List[np.ndarray]:
         """Return all windows pending scoring (passed VAD). Clears the list after return."""
         windows = self.pending_windows.copy()
         self.pending_windows.clear()
         return windows
+
+    async def requeue_windows(self, windows: List[np.ndarray]):
+        """
+        Put windows back that the engine collected but could not fit in a batch.
+
+        get_pending_windows() clears the queue, so without this any window past
+        the engine's max_batch_size was silently dropped on the floor - audio
+        that passed the silence gate and then vanished, with nothing logged.
+        """
+        if windows:
+            self.pending_windows[:0] = windows
 
     async def record_score(self, window_idx: int, score: float, timestamp: float = None):
         """Record a scored window. Transitions to SCORING state if not already there."""
@@ -257,6 +290,27 @@ class Session:
             "pairing_expires_in": int((self.metadata.pairing_expires_at - datetime.now()).total_seconds())
                 if self.state == CallState.CONSENT_PENDING else None,
             "scores": self.scores
+        }
+
+    def telemetry(self, limit: int = 240) -> dict:
+        """Everything the live dashboard needs for one call, in one payload."""
+        rb = self.ringbuffer.stats() if hasattr(self.ringbuffer, "stats") else {}
+        vd = self.vad.stats() if hasattr(self.vad, "stats") else {}
+        return {
+            "call_id": self.call_id,
+            "caller": self.metadata.caller,
+            "state": self.state.value,
+            "pairing_code": self.metadata.pairing_code,
+            "pairing_expires_in": max(
+                0, int((self.metadata.pairing_expires_at - datetime.now()).total_seconds())
+            ),
+            "duration": (
+                (self.metadata.ended_at or datetime.now()) - self.metadata.started_at
+            ).total_seconds(),
+            "ringbuffer": rb,
+            "vad": vd,
+            "windows": self.window_log[-limit:],
+            "scores": self.scores,
         }
 
     def save_audit(self, output_dir: str = "outputs/calls"):

@@ -1,0 +1,51 @@
+:root{
+  color-scheme:light;
+  --bg:#f4f6f6;--surface:#fff;--ink:#0d1414;--ink-2:#3d4a4a;--ink-3:#6e7d7d;
+  --line:#d3dbdb;--accent:#0b7c86;--good:#0a7f2e;--warn:#8a6100;--crit:#b3271f;
+}
+@media (prefers-color-scheme:dark){
+  :root{
+    color-scheme:dark;
+    --bg:#0b1112;--surface:#121a1b;--ink:#eef4f4;--ink-2:#b3c1c1;--ink-3:#7e8d8d;
+    --line:#263334;--accent:#3fc2ce;--good:#39c26a;--warn:#e0a92b;--crit:#f0685f;
+  }
+}
+*{box-sizing:border-box}
+body{margin:0;width:300px;background:var(--bg);color:var(--ink);
+  font:13px/1.5 "IBM Plex Sans",system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
+.wrap{padding:14px}
+header{display:flex;align-items:center;gap:8px;margin-bottom:12px}
+.mark{width:9px;height:9px;border-radius:50%;background:var(--accent)}
+h1{font-size:14px;margin:0;font-weight:700;letter-spacing:.02em;flex:1}
+.ver{font-size:10px;color:var(--ink-3);font-family:ui-monospace,monospace}
+
+.band{background:var(--surface);border:1px solid var(--line);border-left:3px solid var(--ink-3);
+  border-radius:0 8px 8px 0;padding:11px 13px;margin-bottom:11px}
+.band-label{font-weight:700;font-size:15px}
+.band-sub{color:var(--ink-2);font-size:11.5px;margin-top:2px}
+
+.pairing{background:var(--surface);border:1px solid var(--line);border-radius:8px;
+  padding:10px 13px;margin-bottom:11px}
+.pairing .k{font-size:9.5px;letter-spacing:.1em;text-transform:uppercase;color:var(--ink-3)}
+.code{font-family:ui-monospace,monospace;font-size:24px;font-weight:700;letter-spacing:.14em}
+
+.stats{display:grid;grid-template-columns:repeat(3,1fr);gap:1px;background:var(--line);
+  border:1px solid var(--line);border-radius:8px;overflow:hidden;margin:0 0 11px}
+.stats>div{background:var(--surface);padding:7px 9px}
+.stats dt{font-size:9.5px;letter-spacing:.09em;text-transform:uppercase;color:var(--ink-3);margin:0}
+.stats dd{margin:1px 0 0;font-size:11.5px;font-family:ui-monospace,monospace;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+
+.field{display:block;margin-bottom:10px}
+.field span{display:block;font-size:9.5px;letter-spacing:.09em;text-transform:uppercase;
+  color:var(--ink-3);margin-bottom:3px}
+.field input{width:100%;padding:6px 8px;border:1px solid var(--line);border-radius:6px;
+  background:var(--surface);color:var(--ink);font:12px ui-monospace,monospace}
+
+button{width:100%;padding:9px;border:0;border-radius:7px;background:var(--accent);color:#fff;
+  font:600 13px inherit;cursor:pointer}
+button.on{background:var(--crit)}
+button:focus-visible,input:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+
+.err{color:var(--crit);font-size:11.5px;margin:9px 0 0}
+.note{color:var(--ink-3);font-size:10.5px;margin:9px 0 0;line-height:1.45}
