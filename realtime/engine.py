@@ -4,7 +4,6 @@ import asyncio
 import logging
 from typing import Dict, List, Optional, Tuple, Callable
 import numpy as np
-import torch
 
 logger = logging.getLogger(__name__)
 
@@ -16,7 +15,7 @@ class ScoringEngine:
         self,
         mock: bool = True,
         checkpoint_path: Optional[str] = None,
-        device: str = "cuda",
+        device: Optional[str] = None,
         batch_interval: float = 0.5,
         max_batch_size: int = 8,
         on_broadcast: Optional[Callable] = None
@@ -70,8 +69,10 @@ class ScoringEngine:
             for window_idx, window in enumerate(windows):
                 if len(batch) >= self.max_batch_size:
                     break
-                embedding = await self._embed_window(window)
-                batch.append((call_id, session.window_count - len(windows) + window_idx, embedding))
+                # Raw 64000-sample window goes straight into the batch. The
+                # wav2vec2 front-end runs inside the scorer, batched, rather
+                # than once per window here.
+                batch.append((call_id, session.window_count - len(windows) + window_idx, window))
                 taken += 1
 
             # Anything we could not fit goes back on the queue rather than being
@@ -90,27 +91,20 @@ class ScoringEngine:
         embeddings_array = np.stack(embeddings, axis=0)
         return list(call_ids), list(window_indices), embeddings_array
 
-    async def _embed_window(self, window: np.ndarray) -> np.ndarray:
-        """Extract 1024-dim embedding from 4-second audio window."""
-        return np.random.randn(1024).astype(np.float32)
+    async def _score_windows(self, windows: np.ndarray) -> np.ndarray:
+        """Score a batch of 4-second windows -> P(synthetic), one per window.
 
-    async def _score_windows(self, embeddings: np.ndarray) -> np.ndarray:
-        """Score a batch of embeddings."""
-        if self.mock:
-            scores = self.model.score(embeddings)
-        else:
-            with torch.no_grad():
-                embeddings_tensor = torch.from_numpy(embeddings).float().to(self.device)
-                logits = self.model(embeddings_tensor)
+        Both MockScorer and WindowScorer expose .score(batch), so there is no
+        branch here. The real path runs the frozen front-end and the trained
+        head inside demo/score_file.py - the same code the offline pipeline
+        uses, so a live score and an offline score of the same audio agree.
 
-                if logits.shape[-1] == 2:
-                    scores_tensor = torch.softmax(logits, dim=-1)[:, 1]
-                else:
-                    scores_tensor = torch.sigmoid(logits).squeeze(-1)
-
-                scores = scores_tensor.cpu().numpy()
-
-        return scores.astype(np.float32)
+        This blocks the event loop for the length of one forward pass, so it
+        runs in a worker thread; otherwise audio ingest stalls while the GPU
+        works.
+        """
+        scores = await asyncio.to_thread(self.model.score, windows)
+        return np.asarray(scores, dtype=np.float32)
 
     async def run(self):
         """Main loop: collect → batch → score → broadcast."""

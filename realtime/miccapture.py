@@ -189,7 +189,13 @@ async function start(){
   // The server decides whether a verdict may be shown at all; a mock number must
   // never reach the screen dressed as one.
   try {
-    scoringAvailable = !!(await (await fetch("/api/status")).json()).scoring_available;
+    const st = await (await fetch("/api/status")).json();
+    scoringAvailable = !!st.scoring_available;
+    if (st.scoring_synthetic){
+      warn("UNTRAINED DEV CHECKPOINT. Every score below is random noise and says "
+           + "nothing about any voice. Plumbing and latency testing only — "
+           + "never show this to anyone.");
+    }
   } catch { scoringAvailable = false; }
   renderBand();
 

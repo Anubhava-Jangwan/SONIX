@@ -32,6 +32,7 @@ class SonicServer:
         checkpoint: Optional[str] = None,
         mode: str = "voip",
         max_calls: int = 4,
+        max_batch_size: int = 8,
         host: str = "0.0.0.0",
         output_dir: str = "outputs/calls"
     ):
@@ -41,17 +42,33 @@ class SonicServer:
         self.checkpoint = checkpoint
         self.mode = mode
         self.max_calls = max_calls
+        self.max_batch_size = max_batch_size
         self.host = host
         self.output_dir = output_dir
 
         Path(self.output_dir).mkdir(parents=True, exist_ok=True)
 
-        self.engine = ScoringEngine(
-            mock=mock,
-            checkpoint_path=checkpoint,
-            device="cuda",
-            on_broadcast=self._on_scores_ready
-        )
+        # A missing or unloadable checkpoint must not stop the server: capture,
+        # consent and the audit trail are still worth demonstrating. We fall back
+        # to mock and leave scoring switched off rather than exiting.
+        self.load_error = None
+        try:
+            self.engine = ScoringEngine(
+                mock=mock,
+                checkpoint_path=checkpoint,
+                device=None,          # let score_file pick cuda/cpu itself
+                max_batch_size=max_batch_size,
+                on_broadcast=self._on_scores_ready
+            )
+        except Exception as e:
+            if mock:
+                raise
+            self.load_error = str(e)
+            logger.error(f"Checkpoint failed to load ({e}). Falling back to mock; "
+                         "scoring stays switched off.")
+            self.mock = mock = True
+            self.engine = ScoringEngine(
+                mock=True, on_broadcast=self._on_scores_ready)
 
         self.pairing_manager = PairingCodeManager(expiry_sec=120)
         self.ws_clients: Set[web.WebSocketResponse] = set()
@@ -64,7 +81,17 @@ class SonicServer:
         # Only true once a REAL trained head is loaded. The dashboard hides the
         # risk band while this is False, so we never show a number that came
         # from a mock scorer as if it meant something.
-        self.scoring_available = (not mock) and checkpoint is not None
+        # Derived from what actually loaded, not from which flags were passed.
+        self.scoring_available = (not mock) and self.load_error is None
+
+        # True when the loaded head is an UNTRAINED dev checkpoint. Scoring is
+        # still "available" so the whole path can be exercised, but every client
+        # must label the output as meaningless.
+        self.scoring_synthetic = bool(
+            getattr(self.engine, "config", {}).get("synthetic", False))
+        if self.scoring_synthetic:
+            logger.warning("SYNTHETIC checkpoint loaded - scores are NOISE. "
+                           "Plumbing and latency testing only, never a demo.")
 
         logger.info(f"Server initialized: mode={mode}, max_calls={max_calls}, mock={mock}")
 
@@ -294,6 +321,7 @@ class SonicServer:
         }
         return web.json_response({
             "scoring_available": self.scoring_available,
+            "scoring_synthetic": self.scoring_synthetic,
             "mode": self.mode,
             "active_calls": len(self.sessions),
             "max_calls": self.max_calls,
@@ -420,6 +448,10 @@ def main():
     parser.add_argument('--ckpt', type=str, default=None, help="Path to head.pt")
     parser.add_argument('--mode', choices=['voip', 'webrtc', 'upload'], default='voip')
     parser.add_argument('--max-calls', type=int, default=4)
+    parser.add_argument('--max-batch-size', type=int, default=8,
+                        help="Windows scored per forward pass. Measure with "
+                             "realtime/selftest.py: on a GTX 1650, 8 overruns "
+                             "the 0.5s hop (744ms) but 4 fits (394ms).")
     parser.add_argument('--host', type=str, default='0.0.0.0')
     parser.add_argument('--output-dir', type=str, default='outputs/calls')
     parser.add_argument('--log-level', default='INFO')
@@ -445,6 +477,7 @@ def main():
         checkpoint=args.ckpt,
         mode=args.mode,
         max_calls=args.max_calls,
+        max_batch_size=args.max_batch_size,
         host=args.host,
         output_dir=args.output_dir
     )
