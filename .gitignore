@@ -27,3 +27,6 @@ missing_eval_files.txt
 
 # local test audio (not shared)
 testcall.wav
+
+# local backups made before edits
+*.bak

@@ -73,7 +73,9 @@ class Session:
         call_id: str,
         source,  # SourceAdapter (AudioSocket, WebRTC, file)
         pairing_code: str,
-        pairing_expiry_sec: int = 120
+        pairing_expiry_sec: int = 120,
+        vad_energy: float = None,
+        model_key: str = None,
     ):
         """
         Args:
@@ -81,10 +83,18 @@ class Session:
             source: SourceAdapter instance (has .caller, .read())
             pairing_code: 6-digit approval code
             pairing_expiry_sec: Seconds until pairing code expires
+            model_key: which trained head the engine should score this call
+                with ("baseline"/"augmented"/"robust"). None = server default.
         """
         self.call_id = call_id
         self.source = source
         self.state = CallState.CONNECTING
+        self.model_key = model_key
+
+        # Set by the upload path so the dashboard can draw a real progress bar
+        # instead of guessing when a file has finished streaming.
+        self.expected_windows = None
+        self.feed_done = False
 
         now = datetime.now()
         self.metadata = CallMetadata(
@@ -100,7 +110,10 @@ class Session:
         from realtime.vad import VAD
 
         self.ringbuffer = RingBuffer()       # [capacity=64000 samples @ 16kHz = 4s]
-        self.vad = VAD()                     # [energy + zero-crossing threshold]
+        # Browser mic audio is often far quieter than the studio speech the
+        # default floor assumes, so the gate is tunable from the server.
+        self.vad = (VAD(threshold_energy=vad_energy) if vad_energy is not None
+                    else VAD())
 
         # Windows that passed VAD (ready for scoring)
         self.pending_windows: List[np.ndarray] = []
@@ -300,6 +313,9 @@ class Session:
             "call_id": self.call_id,
             "caller": self.metadata.caller,
             "state": self.state.value,
+            "model": self.model_key,
+            "expected_windows": self.expected_windows,
+            "feed_done": bool(self.feed_done),
             "pairing_code": self.metadata.pairing_code,
             "pairing_expires_in": max(
                 0, int((self.metadata.pairing_expires_at - datetime.now()).total_seconds())

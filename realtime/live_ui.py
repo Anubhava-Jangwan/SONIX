@@ -2,11 +2,38 @@
 
 import streamlit as st
 import json
+import sys
+import time
 import requests
 from datetime import datetime
+from pathlib import Path
+
+import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 import plotly.express as px
+
+# The band logic lives in demo/risk.py and is what every number we have quoted
+# was produced with. Import it rather than reimplementing it here -- two copies
+# of a smoothing rule is how the live UI and the demo UI end up disagreeing
+# about the same clip in front of a judge.
+_DEMO_DIR = Path(__file__).resolve().parent.parent / "demo"
+if str(_DEMO_DIR) not in sys.path:
+    sys.path.insert(0, str(_DEMO_DIR))
+try:
+    from risk import moving_average, hysteresis_bands
+    _RISK_OK = True
+except Exception:                                   # pragma: no cover
+    _RISK_OK = False
+
+    def moving_average(scores, window=5):
+        arr = np.asarray(list(scores), dtype=float)
+        return np.array([arr[max(0, i - window + 1):i + 1].mean()
+                         for i in range(arr.size)])
+
+    def hysteresis_bands(scores, amber_threshold, red_threshold, **kw):
+        return ["RED" if v >= red_threshold else
+                ("AMBER" if v >= amber_threshold else "GREEN") for v in scores]
 
 st.set_page_config(
     page_title="SONIX Live",
@@ -26,8 +53,6 @@ HTTP_URL = "http://localhost:8000"
 st.sidebar.title("⚙️ SONIX Control")
 server_url = st.sidebar.text_input("Server URL", HTTP_URL)
 ws_url = st.sidebar.text_input("WebSocket URL", WS_URL)
-auto_refresh = st.sidebar.checkbox("Auto Refresh", value=True)
-refresh_interval = st.sidebar.slider("Refresh Interval (sec)", 1, 30, 2)
 
 st.title("🎯 SONIX Live Call Detection")
 st.markdown("Real-time AI voice-clone detection powered by wav2vec2 + MLP head")
@@ -58,6 +83,33 @@ def get_telemetry(limit=240):
     return None
 
 
+def get_models():
+    """Which heads the server can score with. Empty list = mock mode."""
+    try:
+        resp = requests.get(f"{server_url}/api/models", timeout=3)
+        if resp.status_code == 200:
+            return resp.json()
+    except Exception:
+        pass
+    return {"mock": True, "default": None, "models": []}
+
+
+def get_call_telemetry(call_id, limit=2000):
+    """Telemetry for ONE call. This is what the upload tab polls while a clip
+    streams -- each poll returns every score recorded so far, which is how the
+    timeline grows in front of you instead of appearing all at once."""
+    try:
+        resp = requests.get(f"{server_url}/api/telemetry",
+                            params={"call_id": call_id, "limit": limit}, timeout=30)
+        if resp.status_code == 200:
+            return resp.json().get("calls", {}).get(call_id)
+    except Exception:
+        # A slow or dropped poll is not fatal: scores are held server-side and
+        # the next poll returns everything recorded since.
+        pass
+    return None
+
+
 def post_json(path, payload):
     try:
         return requests.post(f"{server_url}{path}", json=payload, timeout=3)
@@ -74,10 +126,61 @@ GOOD, WARNING, CRITICAL = "#0ca30c", "#fab219", "#d03b3b"
 SERIES_1, MUTED = "#2a78d6", "#898781"
 GRID = "rgba(137,135,129,0.22)"
 
-# Provisional thresholds. These came from the CLEAN benchmark and have NOT been
-# recalibrated on real recordings yet - Lane 1 owns that. Labelled on screen so
-# nobody mistakes them for tuned values.
-AMBER_AT, RED_AT = 0.35, 0.65
+# Data-driven defaults from the eval score distribution, matching demo/app.py.
+# They came from the CLEAN benchmark and have NOT been recalibrated on real
+# recordings yet, so they are adjustable and labelled as provisional on screen.
+st.sidebar.divider()
+st.sidebar.subheader("Risk thresholds")
+AMBER_AT = st.sidebar.slider("Amber threshold", 0.05, 0.90, 0.10, 0.01)
+RED_AT = st.sidebar.slider("Red threshold", float(min(1.0, AMBER_AT + 0.05)),
+                           1.00, 0.90, 0.01)
+st.sidebar.caption("Defaults are the data-driven values from the eval score "
+                   "distribution (amber 0.10, red 0.90). Configurable per "
+                   "organisation — that is a product claim, so it is a real "
+                   "control, not decoration.")
+
+# ---- model tabs ---------------------------------------------------------
+st.sidebar.divider()
+st.sidebar.subheader("Detection model")
+
+_model_info = get_models()
+_catalogue = _model_info.get("models") or []
+_ready = [m for m in _catalogue if m.get("exists")]
+
+if _model_info.get("mock"):
+    st.sidebar.error("Server is in **mock** mode — no trained head loaded, so "
+                     "no model choice and no real verdict.")
+    SELECTED_MODEL, SELECTED_LABEL = None, "Mock"
+elif not _ready:
+    st.sidebar.error("No checkpoints found under `outputs/models/`.")
+    SELECTED_MODEL, SELECTED_LABEL = None, "None"
+else:
+    _default = _model_info.get("default") or _ready[0]["key"]
+    _keys = [m["key"] for m in _ready]
+    _labels = {m["key"]: m["label"] for m in _ready}
+    SELECTED_MODEL = st.sidebar.radio(
+        "Score with", _keys,
+        index=_keys.index(_default) if _default in _keys else 0,
+        format_func=lambda k: _labels[k],
+        key="model_choice",
+    )
+    SELECTED_LABEL = _labels[SELECTED_MODEL]
+    _note = next((m["note"] for m in _ready if m["key"] == SELECTED_MODEL), "")
+    st.sidebar.caption(_note)
+
+    _missing = [m["label"] for m in _catalogue if not m.get("exists")]
+    if _missing:
+        st.sidebar.caption("Not on disk yet: " + ", ".join(_missing))
+
+    if _model_info.get("warming"):
+        st.sidebar.info("Loading the wav2vec2 front-end — the first analysis "
+                        "will start once this finishes (~30–60s).")
+    elif _model_info.get("warm"):
+        st.sidebar.success("Model warm — analysis starts immediately.")
+
+st.sidebar.divider()
+auto_refresh = st.sidebar.checkbox("Auto refresh live-call tab", value=True)
+refresh_interval = st.sidebar.slider("Refresh interval (sec)", 1, 30, 2)
 
 
 def band_for(score):
@@ -164,6 +267,219 @@ def audio_path_chart(windows, t0):
         ))
     fig.update_yaxes(range=[0, 1], tickformat=".0%")
     return base_layout(fig, 240, "Speech in window")
+
+
+BAND_STYLE = {
+    "GREEN": ("GREEN — LOW", "Proceed normally", GOOD),
+    "AMBER": ("AMBER — ELEVATED", "Call back on a number you already have", WARNING),
+    "RED": ("RED — HIGH", "Second-level approval required", CRITICAL),
+}
+
+
+def upload_chart(times, raw, smoothed):
+    """Per-window risk over the clip, with the decision bands behind it."""
+    fig = go.Figure()
+    for lo, hi, colour in ((0, AMBER_AT, GOOD), (AMBER_AT, RED_AT, WARNING),
+                           (RED_AT, 1, CRITICAL)):
+        fig.add_hrect(y0=lo, y1=hi, fillcolor=colour, opacity=0.07,
+                      line_width=0, layer="below")
+    for y, label, colour in ((AMBER_AT, "Amber", WARNING), (RED_AT, "Red", CRITICAL)):
+        fig.add_hline(y=y, line=dict(color=colour, width=1, dash="dot"),
+                      annotation_text=label, annotation_position="right",
+                      annotation_font=dict(color=colour, size=11))
+
+    fig.add_trace(go.Scatter(
+        x=times, y=raw, mode="markers", name="Per-window score",
+        marker=dict(size=6, color=MUTED, opacity=0.65),
+        hovertemplate="%{x:.1f}s &nbsp; raw %{y:.3f}<extra></extra>",
+    ))
+    fig.add_trace(go.Scatter(
+        x=times, y=smoothed, mode="lines", name="Smoothed (5-window mean)",
+        line=dict(color=SERIES_1, width=2.5),
+        hovertemplate="%{x:.1f}s &nbsp; P(AI) %{y:.1%}<extra></extra>",
+    ))
+    fig.update_yaxes(range=[0, 1], tickformat=".0%")
+    fig = base_layout(fig, 360, "P(AI voice)")
+    fig.update_xaxes(title_text="Window start (seconds into clip)")
+    return fig
+
+
+def band_card(band, label, latest):
+    name, action, colour = BAND_STYLE.get(band, BAND_STYLE["GREEN"])
+    latest_txt = f"{latest:.1%}" if latest is not None else "—"
+    return (
+        f"<div style='border:4px solid {colour};border-radius:18px;"
+        f"padding:20px;text-align:center;background:rgba(127,127,127,0.06)'>"
+        f"<div style='font-size:13px;font-weight:700;letter-spacing:2px;"
+        f"color:{MUTED}'>{label.upper()}</div>"
+        f"<div style='font-size:40px;font-weight:900;color:{colour}'>{name}</div>"
+        f"<div style='font-size:17px;font-weight:600'>{action}</div>"
+        f"<div style='font-size:13px;color:{MUTED};margin-top:6px'>"
+        f"latest window {latest_txt}</div></div>"
+    )
+
+
+def _series_from_scores(scores):
+    """{window_idx: {score}} -> (times, raw, smoothed, bands), ordered by window."""
+    pts = sorted((int(k), float(v["score"])) for k, v in scores.items())
+    if not pts:
+        return [], [], [], []
+    times = [i * 0.5 for i, _ in pts]
+    raw = [float(np.clip(v, 0.0, 1.0)) for _, v in pts]
+    smoothed = list(moving_average(raw, 5))
+    bands = hysteresis_bands(smoothed, amber_threshold=AMBER_AT,
+                             red_threshold=RED_AT, agree_count=3,
+                             history_size=5, initial_band="GREEN",
+                             warmup_windows=5)
+    return times, raw, smoothed, bands
+
+
+def render_upload_result(result, live=False, slots=None):
+    """Draw one frame of an upload's timeline. Used both during streaming
+    (into pre-made placeholders) and to redraw the last completed run."""
+    times, raw, smoothed, bands = _series_from_scores(result["scores"])
+    band = bands[-1] if bands else "GREEN"
+    latest = raw[-1] if raw else None
+
+    if slots is None:
+        st.markdown(band_card(band, result["label"], latest), unsafe_allow_html=True)
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Windows scored", len(raw))
+        c2.metric("Mean", f"{np.mean(raw):.1%}" if raw else "—")
+        c3.metric("Max", f"{np.max(raw):.1%}" if raw else "—")
+        c4.metric("% windows ≥ red", f"{np.mean(np.array(raw) >= RED_AT):.0%}" if raw else "—")
+        if raw:
+            st.plotly_chart(upload_chart(times, raw, smoothed),
+                            use_container_width=True,
+                            key=f"chart_{result['call_id']}_static")
+        return band
+
+    slots["band"].markdown(band_card(band, result["label"], latest),
+                           unsafe_allow_html=True)
+    with slots["metrics"].container():
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Windows scored", f"{len(raw)} / {result['expected_windows']}")
+        c2.metric("Mean", f"{np.mean(raw):.1%}" if raw else "—")
+        c3.metric("Max", f"{np.max(raw):.1%}" if raw else "—")
+        c4.metric("% windows ≥ red",
+                  f"{np.mean(np.array(raw) >= RED_AT):.0%}" if raw else "—")
+    if raw:
+        slots["chart"].plotly_chart(
+            upload_chart(times, raw, smoothed), use_container_width=True,
+            key=f"chart_{result['call_id']}_{len(raw)}")
+    return band
+
+
+def run_upload_stream(uploaded_file, model_key, model_label):
+    """Send the file, then poll the live engine and redraw as scores land.
+
+    The server returns as soon as the clip is queued, so what you watch here is
+    the engine actually working through the windows -- the same code path a
+    live call takes. Nothing is precomputed.
+    """
+    status = st.empty()
+    progress = st.progress(0.0)
+    slots = {"band": st.empty(), "metrics": st.empty(), "chart": st.empty()}
+
+    status.info(f"Uploading and starting the {model_label} model…")
+    try:
+        resp = requests.post(
+            f"{server_url}/api/score-file",
+            files={"file": (uploaded_file.name, uploaded_file.getvalue())},
+            data={"model": model_key},
+            timeout=120,
+        )
+    except Exception as exc:
+        status.error(f"Could not reach the server: {exc}")
+        progress.empty()
+        return
+
+    if resp.status_code != 200:
+        status.error(f"Server refused the file: {resp.text}")
+        progress.empty()
+        return
+
+    started = resp.json()
+    call_id = started["call_id"]
+    expected = max(1, int(started.get("expected_windows") or 1))
+
+    status.info(
+        f"{model_label} model · {started.get('duration_s', 0):.1f}s of audio · "
+        f"{expected} windows to score…"
+    )
+
+    result = {
+        "call_id": call_id,
+        "name": uploaded_file.name,
+        "model": model_key,
+        "label": model_label,
+        "expected_windows": expected,
+        "duration_s": started.get("duration_s"),
+        "amber": AMBER_AT,
+        "red": RED_AT,
+        "scores": {},
+    }
+
+    # The first poll can be slow: on a cold server the 300M front-end loads
+    # here. Allow generously for that, then require steady progress.
+    deadline = time.time() + 900
+    stall_since = time.time()
+    last_count = 0
+
+    while time.time() < deadline:
+        call = get_call_telemetry(call_id)
+        if call is None:
+            time.sleep(0.4)
+            continue
+
+        result["scores"] = call.get("scores", {}) or {}
+        n = len(result["scores"])
+        progress.progress(min(1.0, n / expected))
+        render_upload_result(result, live=True, slots=slots)
+
+        if n > last_count:
+            last_count = n
+            stall_since = time.time()
+
+        if n >= expected:
+            break
+        # Feed finished and nothing new for 15s: the silence gate dropped the
+        # rest. That is a real outcome, not a hang - say so rather than spin.
+        if call.get("feed_done") and time.time() - stall_since > 15:
+            status.warning(
+                f"Stopped at {n} of {expected} windows — the remaining windows "
+                "were dropped by the silence gate before scoring."
+            )
+            break
+        time.sleep(0.4)
+
+    post_json("/api/end-call", {"call_id": call_id})
+    progress.empty()
+
+    n = len(result["scores"])
+    if n == 0:
+        status.error(
+            "No windows were scored. Either the clip is silent, or every window "
+            "was rejected by the silence gate — try `--vad-energy 0.003` on the "
+            "server for a quiet recording."
+        )
+        return
+
+    band = render_upload_result(result, live=True, slots=slots)
+    status.success(
+        f"Done — {n} windows scored by the {model_label} model. Final band: {band}."
+    )
+    st.caption(
+        f"Thresholds: amber ≥ {AMBER_AT:.0%}, red ≥ {RED_AT:.0%}. Band uses a "
+        "5-window moving average with hysteresis (3 of 5 must agree), so a "
+        "single odd window cannot flip the verdict."
+    )
+    st.download_button(
+        "Download scores as JSON", data=json.dumps(result, indent=2),
+        file_name=f"{call_id}_scores.json", mime="application/json",
+        key=f"dl_{call_id}",
+    )
+    st.session_state.last_upload = result
 
 
 tab1, tab2, tab3, tab4 = st.tabs(["📞 Live Calls", "📤 Upload File", "📋 History", "ℹ️ Status"])
@@ -274,56 +590,50 @@ with tab1:
                         st.rerun()
 
 with tab2:
-    st.header("📤 Upload WAV for Analysis")
-    st.write("Upload a recorded call for post-call scoring and analysis")
+    st.header("📤 Upload a recording — scored live, window by window")
+    st.write(
+        "The file is streamed into the same live engine a real call goes "
+        "through: 4-second windows at a 0.5s hop, silence gate, then the "
+        "trained head. The timeline below fills in as the windows are scored — "
+        "it is not a result computed up front and replayed."
+    )
 
-    uploaded_file = st.file_uploader("Choose a WAV file", type=["wav", "mp3"])
+    if SELECTED_MODEL is None:
+        st.error("No trained head is loaded, so nothing here would mean anything. "
+                 "Start the server with a checkpoint in `outputs/models/`.")
+    else:
+        st.caption(f"Scoring with **{SELECTED_LABEL}** — change it in the sidebar.")
+
+    uploaded_file = st.file_uploader("Choose an audio file",
+                                     type=["wav", "mp3", "flac", "ogg", "m4a"])
+
+    # Set while THIS script run streamed a clip. The streaming loop blocks the
+    # script, so a plain local is enough - and it keeps the auto-refresh below
+    # from rerunning and wiping the result the instant it finishes.
+    streamed_now = False
 
     if uploaded_file:
         st.audio(uploaded_file)
 
-        if st.button("🎯 Score This File"):
-            with st.spinner("Processing... (embedding + scoring)"):
-                try:
-                    files = {"file": uploaded_file.getbuffer()}
-                    response = requests.post(f"{server_url}/api/score-file", files=files, timeout=60)
+        if st.button("▶  Analyse live", type="primary",
+                     disabled=SELECTED_MODEL is None):
+            streamed_now = True
+            run_upload_stream(uploaded_file, SELECTED_MODEL, SELECTED_LABEL)
 
-                    if response.status_code == 200:
-                        result = response.json()
-                        st.success(f"✓ Scored: {result['call_id']}")
-                        st.divider()
-
-                        col1, col2, col3 = st.columns(3)
-                        with col1:
-                            score = result['summary']['mean_score'] or 0
-                            label = "🚨 LIKELY AI" if score > 0.7 else ("⚠️ UNCERTAIN" if score > 0.3 else "✓ LIKELY REAL")
-                            st.metric("Mean Score", f"{score:.1%}", delta=label)
-                        with col2:
-                            st.metric("Max Score", f"{result['summary']['max_score']:.1%}")
-                        with col3:
-                            st.metric("Min Score", f"{result['summary']['min_score']:.1%}")
-
-                        st.subheader("Score Timeline")
-                        scores_dict = result.get('scores', {})
-                        if scores_dict:
-                            scores_list = [{"window": int(k), "score": v["score"]} for k, v in scores_dict.items()]
-                            scores_list.sort(key=lambda x: x["window"])
-                            df = pd.DataFrame(scores_list)
-
-                            fig = px.line(df, x="window", y="score", markers=True,
-                                title="P(AI Voice) Over Time", labels={"score": "P(AI)", "window": "Window Index"})
-                            fig.update_yaxes(range=[0, 1])
-                            fig.update_layout(height=400, hovermode='x unified')
-                            st.plotly_chart(fig, use_container_width=True)
-
-                            st.divider()
-                            json_str = json.dumps(result, indent=2)
-                            st.download_button(label="Download JSON", data=json_str,
-                                file_name=f"{result['call_id']}_scores.json", mime="application/json")
-                    else:
-                        st.error(f"Server error: {response.text}")
-                except Exception as e:
-                    st.error(f"Error: {e}")
+    last = st.session_state.get("last_upload")
+    if last and not streamed_now:
+        st.divider()
+        st.subheader("Last run")
+        st.caption(f"{last['name']} · {last['label']} model · "
+                   f"{len(last['scores'])} windows")
+        render_upload_result(last, live=False)
+        st.download_button(
+            "Download scores as JSON",
+            data=json.dumps(last, indent=2),
+            file_name=f"{last['call_id']}_scores.json",
+            mime="application/json",
+            key="dl_last_upload",
+        )
 
 # TAB 3: CALL HISTORY
 with tab3:
@@ -361,7 +671,9 @@ with tab4:
         st.error("❌ Cannot connect to server")
         st.code("python -m realtime.server --mock --ws-port 8000")
 
-if auto_refresh:
-    import time
+# Auto-refresh drives the live-call tab. It must never fire while an upload is
+# streaming (it would restart the script mid-run) or immediately after one
+# finishes (it would wipe the result off the screen before it could be read).
+if auto_refresh and not streamed_now:
     time.sleep(refresh_interval)
     st.rerun()

@@ -4,6 +4,7 @@ import asyncio
 import argparse
 import logging
 import json
+import tempfile
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, Set, Optional
@@ -17,8 +18,14 @@ from realtime.pairing import PairingCodeManager
 from realtime.source import WavFileSource, MicSource
 from realtime.miccapture import mic_page_handler
 from realtime.resample import TARGET_SR, pcm16_to_float32, resample
+from realtime import models as model_registry
 
 logger = logging.getLogger(__name__)
+
+# aiohttp defaults to a 1 MB request body, which rejects essentially every real
+# call recording with a bare "Content Too Large". 256 MB is far more than any
+# clip we demo and still bounded.
+MAX_UPLOAD_BYTES = 256 * 1024 * 1024
 
 
 class SonicServer:
@@ -227,11 +234,19 @@ class SonicServer:
         sample_rate = int(data.get("sample_rate") or TARGET_SR)
 
         source = MicSource(caller=data.get("caller", "browser-mic"), sample_rate=sample_rate)
-        session = Session(call_id, source, pairing_code=pairing_code)
+        session = Session(call_id, source, pairing_code=pairing_code,
+                          vad_energy=getattr(self, 'vad_energy', None))
 
         # CONNECTING -> CONSENT_PENDING. Without this, on_pairing_approved() is a
         # no-op and push_audio() silently drops every chunk.
         await session.request_consent()
+
+        # The engine only scores sessions in LISTENING/SCORING. Until pairing is
+        # approved nothing is scored and the dashboard looks silently broken --
+        # which is exactly what it did. --auto-approve skips that for demos.
+        if getattr(self, 'auto_approve', False):
+            await session.on_pairing_approved()
+            logger.info(f"[{call_id}] auto-approved (--auto-approve): scoring now")
 
         await self.engine.add_session(session)
         self.sessions[call_id] = session
@@ -294,6 +309,10 @@ class SonicServer:
         }
         return web.json_response({
             "scoring_available": self.scoring_available,
+            "warm": bool(getattr(self.engine, "warm", True)),
+            "warming": bool(getattr(self.engine, "warming", False)),
+            "models": self.engine.model_catalogue() if not self.mock else [],
+            "default_model": self.engine.default_key if not self.mock else None,
             "mode": self.mode,
             "active_calls": len(self.sessions),
             "max_calls": self.max_calls,
@@ -302,8 +321,48 @@ class SonicServer:
             "timestamp": datetime.now().isoformat(),
         })
 
+    async def http_models_handler(self, request):
+        """Which trained heads this server can score with, and which exist on disk."""
+        return web.json_response({
+            "mock": self.mock,
+            "warm": bool(getattr(self.engine, "warm", True)),
+            "warming": bool(getattr(self.engine, "warming", False)),
+            "default": self.engine.default_key if not self.mock else None,
+            "models": self.engine.model_catalogue() if not self.mock else [],
+        })
+
+    async def _feed_upload(self, call_id: str, session, source, chunk: int = 8000,
+                           pace: float = 0.02):
+        """Push an uploaded file into a session in the background.
+
+        This used to run inline inside the request, so the browser sat on a
+        blocked POST for the whole clip and every score arrived at once at the
+        end. Feeding in a task means the dashboard can poll /api/telemetry and
+        watch the risk line build window by window, which is the whole point of
+        a live-audio demo.
+        """
+        try:
+            while True:
+                samples = source.read(chunk)
+                if samples is None or len(samples) == 0:
+                    break
+                await session.push_audio(samples)
+                await asyncio.sleep(pace)
+        except Exception as exc:
+            logger.error(f"[{call_id}] upload feed failed: {exc}", exc_info=True)
+        finally:
+            session.feed_done = True
+            logger.info(f"[{call_id}] upload feed finished "
+                        f"({session.ringbuffer.windows_emitted} windows emitted)")
+
     async def http_upload_handler(self, request):
-        """Handle WAV file uploads for post-call scoring."""
+        """Accept a file, start scoring it, and return immediately.
+
+        The response carries the call_id and how many windows to expect; the
+        dashboard then polls /api/telemetry?call_id=... and draws the timeline
+        as the scores land. Pass wait=1 to get the old blocking behaviour back
+        (used by scripts that just want the final numbers).
+        """
         try:
             data = await request.post()
             file_field = data.get('file')
@@ -311,46 +370,106 @@ class SonicServer:
             if not file_field:
                 return web.json_response({"error": "No file provided"}, status=400)
 
-            call_id = f"upload_{datetime.now().isoformat().replace(':', '-')}"
-            logger.info(f"Processing upload: {call_id}")
+            requested = (data.get('model') or '').strip() or None
+            if requested and not self.mock:
+                try:
+                    await asyncio.to_thread(self.engine.ensure_model, requested)
+                except Exception as exc:
+                    return web.json_response(
+                        {"error": f"model '{requested}' unavailable: {exc}"}, status=400)
 
-            temp_path = f"/tmp/{call_id}.wav"
-            with open(temp_path, 'wb') as f:
-                f.write(file_field.file.read())
+            wait = str(data.get('wait') or '').lower() in ('1', 'true', 'yes')
+
+            call_id = f"upload_{datetime.now().strftime('%Y%m%dT%H%M%S_%f')}"
+            model_key = requested or (self.engine.default_key if not self.mock else None)
+            logger.info(f"Processing upload: {call_id} (model={model_key})")
+
+            # /tmp does not exist on Windows -- this used to fail outright there.
+            suffix = Path(getattr(file_field, "filename", "") or "upload.wav").suffix or ".wav"
+            fd = tempfile.NamedTemporaryFile(delete=False, suffix=suffix,
+                                             prefix=f"sonix_{call_id}_")
+            fd.write(file_field.file.read())
+            fd.close()
+            temp_path = fd.name
 
             source = WavFileSource(temp_path)
-            session = Session(call_id, source, pairing_code="upload_mode", pairing_expiry_sec=1)
+            try:
+                # Decoding + resampling is CPU work; a long clip would otherwise
+                # stall every other request for its duration.
+                duration = await asyncio.to_thread(lambda: source.duration_sec)
+            except Exception as exc:
+                return web.json_response({"error": f"could not decode audio: {exc}"},
+                                         status=400)
+
+            n = int(round(duration * TARGET_SR))
+            win, hop = 64000, 8000
+            if n < win:
+                # A clip shorter than one window emits NOTHING in the live path.
+                # Repeat-pad it rather than zero-pad: padding with digital
+                # silence is exactly the bug that made short real clips score
+                # 0.88 ("fake") instead of 0.03 ("real").
+                source._load()
+                reps = int(np.ceil(win / max(1, source._samples.size)))
+                source._samples = np.tile(source._samples, reps)[:win].astype(np.float32)
+                source._pos = 0
+                n = win
+                logger.info(f"[{call_id}] clip is {duration:.2f}s (< 4s); "
+                            f"repeat-padded to one full window")
+            expected_windows = (n - win) // hop + 1
+
+            session = Session(call_id, source, pairing_code="upload_mode",
+                              pairing_expiry_sec=1,
+                              vad_energy=getattr(self, 'vad_energy', None),
+                              model_key=model_key)
+            session.expected_windows = int(expected_windows)
 
             await session.request_consent()
             await session.on_pairing_approved()
             await self.engine.add_session(session)
             self.sessions[call_id] = session
 
-            while True:
-                samples = source.read(8000)
-                if samples is None or len(samples) == 0:
-                    break
-                await session.push_audio(samples)
-                await asyncio.sleep(0.01)
+            feed = asyncio.create_task(self._feed_upload(call_id, session, source))
 
-            await asyncio.sleep(0.5)
+            if not wait:
+                return web.json_response({
+                    "call_id": call_id,
+                    "status": "streaming",
+                    "model": model_key,
+                    "duration_s": round(float(duration), 3),
+                    "expected_windows": int(expected_windows),
+                    "poll": f"/api/telemetry?call_id={call_id}",
+                })
+
+            # Blocking path: wait for the feed, then for scoring to drain.
+            await feed
+            for _ in range(600):                       # 60s ceiling
+                if len(session.scores) >= expected_windows or not session.pending_windows:
+                    if len(session.scores) >= expected_windows:
+                        break
+                await asyncio.sleep(0.1)
             await self._on_call_ended(call_id)
 
             scores_list = [s["score"] for s in session.scores.values()]
-            response = {
+            return web.json_response({
                 "call_id": call_id,
                 "status": "success",
+                "model": model_key,
                 "windows_scored": len(session.scores),
+                "expected_windows": int(expected_windows),
                 "summary": {
                     "mean_score": float(np.mean(scores_list)) if scores_list else None,
                     "max_score": float(np.max(scores_list)) if scores_list else None,
                     "min_score": float(np.min(scores_list)) if scores_list else None
                 },
                 "scores": session.scores
-            }
+            })
 
-            return web.json_response(response)
-
+        except (web.HTTPRequestEntityTooLarge, ValueError) as e:
+            # aiohttp raises this while parsing an over-size body in .post().
+            logger.error(f"Upload too large: {e}")
+            return web.json_response(
+                {"error": f"file exceeds the {MAX_UPLOAD_BYTES // (1024*1024)} MB "
+                          f"upload limit"}, status=413)
         except Exception as e:
             logger.error(f"Upload handler error: {e}", exc_info=True)
             return web.json_response({"error": str(e)}, status=500)
@@ -374,6 +493,10 @@ class SonicServer:
         engine_task = asyncio.create_task(self.engine.run())
         logger.info(f"Engine started (mock={self.mock})")
 
+        # Pay the model-loading cost now, in a thread, instead of inside the
+        # first upload -- where it looked exactly like a hung server.
+        warm_task = asyncio.create_task(self.engine.preload())
+
         if self.mode == "voip":
             audio_server = AudioSocketServer(
                 port=self.port,
@@ -382,10 +505,11 @@ class SonicServer:
             audio_task = asyncio.create_task(audio_server.run())
             logger.info(f"AudioSocket server started on :{self.port}")
 
-        app = web.Application()
+        app = web.Application(client_max_size=MAX_UPLOAD_BYTES)
         app.router.add_get('/ws', self.websocket_handler)
         app.router.add_post('/api/score-file', self.http_upload_handler)
         app.router.add_get('/api/status', self.http_status_handler)
+        app.router.add_get('/api/models', self.http_models_handler)
         app.router.add_get('/api/telemetry', self.http_telemetry_handler)
         app.router.add_post('/api/approve', self.http_approve_handler)
         app.router.add_post('/api/end-call', self.http_end_call_handler)
@@ -394,7 +518,30 @@ class SonicServer:
         runner = web.AppRunner(app)
         await runner.setup()
         site = web.TCPSite(runner, self.host, self.ws_port)
-        await site.start()
+        try:
+            await site.start()
+        except OSError as exc:
+            # A stale server from an earlier run holding the port is the single
+            # most common way this fails, and the raw 30-line traceback buries
+            # that. Say it plainly, with the command that fixes it.
+            print()
+            print("=" * 70)
+            print(f"PORT {self.ws_port} IS ALREADY IN USE")
+            print("=" * 70)
+            print("Another SONIX server is almost certainly still running from")
+            print("an earlier run -- and it is running the OLD code, so anything")
+            print("you test against it will behave like the old build.")
+            print()
+            print("Kill it, then start this one again:")
+            print()
+            print("    taskkill /F /IM python.exe          (Windows)")
+            print("    pkill -f realtime.server            (macOS/Linux)")
+            print()
+            print(f"Or run this server on a free port:  --ws-port {self.ws_port + 1}")
+            print("=" * 70)
+            engine_task.cancel()
+            warm_task.cancel()
+            raise SystemExit(1) from exc
 
         logger.info(f"WebSocket server started on ws://{self.host}:{self.ws_port}")
         logger.info(f"Microphone capture page: http://localhost:{self.ws_port}/mic")
@@ -419,6 +566,14 @@ def main():
                         help="Use the mock scorer (no checkpoint needed)")
     parser.add_argument('--ckpt', type=str, default=None, help="Path to head.pt")
     parser.add_argument('--mode', choices=['voip', 'webrtc', 'upload'], default='voip')
+    parser.add_argument('--auto-approve', action='store_true', default=False,
+                        help="skip the pairing/consent step and start scoring "
+                             "immediately. For demos and testing only -- the "
+                             "consent gate exists for a reason in real use.")
+    parser.add_argument('--vad-energy', type=float, default=None,
+                        help="VAD energy floor (default 0.01 ~= -40 dBFS). "
+                             "Lower it (e.g. 0.003) if a quiet mic is being "
+                             "rejected as silence and nothing gets scored.")
     parser.add_argument('--max-calls', type=int, default=4)
     parser.add_argument('--host', type=str, default='0.0.0.0')
     parser.add_argument('--output-dir', type=str, default='outputs/calls')
@@ -428,10 +583,29 @@ def main():
 
     # Previously --mock defaulted to True, so real scoring was unreachable even
     # with --ckpt. Now the checkpoint decides, and we say which one is in force.
-    use_mock = args.mock or args.ckpt is None
+    # And if --ckpt is omitted we look for the known heads ourselves rather than
+    # silently dropping to mock -- having to name a path to get real scoring was
+    # the single most common way this server came up useless.
+    ckpt = args.ckpt
+    catalogue = model_registry.catalogue()
+    present = [m for m in catalogue if m["exists"]]
+    if ckpt is None and not args.mock and present:
+        default = next((m for m in present if m["key"] == model_registry.DEFAULT_KEY),
+                       present[0])
+        ckpt = default["resolved_path"]
+        print(f"[SONIX] No --ckpt given; using {default['label']} "
+              f"({default['path']}).")
+
+    use_mock = args.mock or ckpt is None
     if use_mock and not args.mock:
-        print("[SONIX] No --ckpt given; falling back to the mock scorer. "
-              "Risk band will stay hidden in the dashboard.")
+        print("[SONIX] No trained head found under outputs/models/; falling back "
+              "to the mock scorer. Risk band will stay hidden in the dashboard.")
+    if not use_mock:
+        found = ", ".join(m["label"] for m in present) or "none"
+        missing = ", ".join(m["label"] for m in catalogue if not m["exists"])
+        print(f"[SONIX] Heads available to the dashboard: {found}")
+        if missing:
+            print(f"[SONIX] Not on disk (tab will be disabled): {missing}")
 
     logging.basicConfig(
         level=args.log_level,
@@ -442,12 +616,25 @@ def main():
         port=args.port,
         ws_port=args.ws_port,
         mock=use_mock,
-        checkpoint=args.ckpt,
+        checkpoint=ckpt,
         mode=args.mode,
         max_calls=args.max_calls,
         host=args.host,
         output_dir=args.output_dir
     )
+    server.auto_approve = args.auto_approve
+    server.vad_energy = args.vad_energy
+
+    if args.auto_approve:
+        print("[SONIX] --auto-approve: calls start scoring immediately, no "
+              "pairing step. Demo/testing only.")
+    else:
+        print("[SONIX] Calls wait for pairing approval before scoring. "
+              "Approve in the dashboard, POST /api/approve, or use "
+              "--auto-approve.")
+    if args.vad_energy is not None:
+        print(f"[SONIX] VAD energy floor set to {args.vad_energy} "
+              f"(default 0.01).")
 
     asyncio.run(server.run())
 
