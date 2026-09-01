@@ -62,11 +62,17 @@ def calculate_eer(labels, scores):
     return float(eer_value), float(eer_threshold)
 
 
-def create_det_curve(labels, scores, output_path):
+def create_det_curve(labels, scores, output_path, title="SONIX DET Curve"):
     """
-    Create a DET-style graph.
-    X-axis: False Positive Rate
-    Y-axis: False Negative Rate
+    Create a DET-style graph on LOG-LOG axes.
+
+    Why log-log: our EER is ~1.5%, so both error rates live below 0.05. On
+    linear axes the whole curve collapses into the bottom-left corner and the
+    plot reads as an empty box. Real DET curves use normal-deviate (probit)
+    axes; log-log is the simple version and is perfectly readable on a slide.
+
+    X-axis: False Positive Rate  (bonafide wrongly called spoof)
+    Y-axis: False Negative Rate  (spoof wrongly called bonafide)
     """
     labels = np.asarray(labels).ravel()
     scores = np.asarray(scores, dtype=np.float64).ravel()
@@ -77,13 +83,53 @@ def create_det_curve(labels, scores, output_path):
     # Convert True Positive Rate to False Negative Rate.
     fnr = 1.0 - tpr
 
+    # The EER point: where FPR and FNR are closest.
+    index = np.nanargmin(np.abs(fpr - fnr))
+    eer_value = (fpr[index] + fnr[index]) / 2.0
+
+    # Log axes cannot show zero. Pick a lower limit from the data itself so we
+    # never silently crop part of the curve: the smallest error rate we can
+    # even represent is 1/n for each class.
+    positives = np.concatenate([fpr[fpr > 0], fnr[fnr > 0]])
+    if positives.size:
+        # one decade of headroom below the smallest observed non-zero rate
+        lower = 10 ** np.floor(np.log10(positives.min()))
+    else:
+        lower = 1e-3
+    lower = min(lower, 1e-3)      # never zoom in tighter than 1e-3
+    lower = max(lower, 1e-6)      # but keep the plot sane
+
     # Create the graph.
     plt.figure(figsize=(7, 6))
-    plt.plot(fpr, fnr)
-    plt.xlabel("False Positive Rate")
-    plt.ylabel("False Negative Rate")
-    plt.title("SONIX DET Curve")
-    plt.grid(True)
+    plt.plot(fpr, fnr, linewidth=2, label="DET curve")
+
+    # Mark the EER point so the headline number is visible on the plot itself.
+    plt.plot(fpr[index], fnr[index], "o", ms=9, color="crimson", zorder=5)
+    plt.annotate(
+        f"EER = {eer_value * 100:.2f}%",
+        (fpr[index], fnr[index]),
+        textcoords="offset points",
+        xytext=(12, 12),
+        fontsize=11,
+        fontweight="bold",
+        color="crimson",
+    )
+
+    # The EER line: FPR == FNR. The curve crosses it exactly at the EER point.
+    diag = np.array([lower, 1.0])
+    plt.plot(diag, diag, "--", linewidth=1, color="grey",
+             label="FPR = FNR (EER line)")
+
+    plt.xscale("log")
+    plt.yscale("log")
+    plt.xlim(lower, 1.0)
+    plt.ylim(lower, 1.0)
+
+    plt.xlabel("False Positive Rate  (real voice flagged as fake)")
+    plt.ylabel("False Negative Rate  (fake voice passed as real)")
+    plt.title(title)
+    plt.grid(True, which="both", alpha=0.3)
+    plt.legend(loc="upper right")
     plt.tight_layout()
     plt.savefig(output_path, dpi=200)
     plt.close()
@@ -157,15 +203,43 @@ def main():
         default="outputs/plots",
         help="Directory where graphs will be saved"
     )
+    parser.add_argument(
+        "--scores-file",
+        default=None,
+        help="score .npy to use instead of <split>_scores.npy "
+             "(e.g. outputs/scores/eval_calibrated_scores.npy)"
+    )
+    parser.add_argument(
+        "--tag",
+        default=None,
+        help="suffix for the output plot filenames. Defaults to the score "
+             "file's stem when --scores-file is used, so a calibrated run "
+             "never overwrites the uncalibrated plots."
+    )
     args = parser.parse_args()
 
     # Convert folder paths into Path objects.
     scores_dir = Path(args.scores_dir)
     out_dir = Path(args.out_dir)
 
-    # These names match the files created by eval.py.
+    # These names match the files created by eval.py. --scores-file lets us
+    # point at any other score array (calibrated scores, a different model)
+    # while still using the split's labels.
     labels_path = scores_dir / f"{args.split}_labels.npy"
-    scores_path = scores_dir / f"{args.split}_scores.npy"
+    if args.scores_file:
+        scores_path = Path(args.scores_file)
+    else:
+        scores_path = scores_dir / f"{args.split}_scores.npy"
+
+    # Name the plots after whatever we actually scored, so re-running with
+    # calibrated scores does not silently overwrite the figure already on a
+    # slide.
+    if args.tag:
+        stem = f"{args.split}_{args.tag}"
+    elif args.scores_file:
+        stem = scores_path.stem.replace("_scores", "")
+    else:
+        stem = args.split
 
     # Check that the files exist.
     if not labels_path.exists():
@@ -207,6 +281,7 @@ def main():
     print("SONIX METRICS")
     print("=" * 60)
     print(f"Split: {args.split}")
+    print(f"Scores file: {scores_path}")
     print(f"Total samples: {len(labels)}")
     print(f"Bonafide / Real (0): {(labels == 0).sum()}")
     print(f"Spoof / Fake (1): {(labels == 1).sum()}")
@@ -218,10 +293,13 @@ def main():
     # -----------------------------
     # Create graphs
     # -----------------------------
-    det_path = out_dir / f"{args.split}_det.png"
-    histogram_path = out_dir / f"{args.split}_scores.png"
+    det_path = out_dir / f"{stem}_det.png"
+    histogram_path = out_dir / f"{stem}_scores.png"
 
-    create_det_curve(labels, scores, det_path)
+    create_det_curve(
+        labels, scores, det_path,
+        title=f"SONIX DET Curve - {stem} (EER {eer_value * 100:.2f}%)"
+    )
     create_score_histogram(labels, scores, histogram_path)
 
     print("\nMetrics calculation complete.")
