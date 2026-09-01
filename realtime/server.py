@@ -4,6 +4,8 @@ import asyncio
 import argparse
 import logging
 import json
+import os
+import tempfile
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, Set, Optional
@@ -332,6 +334,7 @@ class SonicServer:
 
     async def http_upload_handler(self, request):
         """Handle WAV file uploads for post-call scoring."""
+        temp_path = None
         try:
             data = await request.post()
             file_field = data.get('file')
@@ -342,8 +345,10 @@ class SonicServer:
             call_id = f"upload_{datetime.now().isoformat().replace(':', '-')}"
             logger.info(f"Processing upload: {call_id}")
 
-            temp_path = f"/tmp/{call_id}.wav"
-            with open(temp_path, 'wb') as f:
+            # Cross-platform temp file. The old hard-coded "/tmp/" does not exist
+            # on Windows, so every upload 500'd there.
+            fd, temp_path = tempfile.mkstemp(prefix="sonix_upload_", suffix=".wav")
+            with os.fdopen(fd, "wb") as f:
                 f.write(file_field.file.read())
 
             source = WavFileSource(temp_path)
@@ -382,12 +387,23 @@ class SonicServer:
         except Exception as e:
             logger.error(f"Upload handler error: {e}", exc_info=True)
             return web.json_response({"error": str(e)}, status=500)
+        finally:
+            if temp_path:
+                try:
+                    os.unlink(temp_path)
+                except OSError:
+                    pass
 
     async def http_status_handler(self, request):
         """Return server status."""
         return web.json_response({
             "status": "ok",
             "mode": self.mode,
+            # The /mic page reads scoring_available from HERE, so it has to be
+            # reported here too (previously only /api/telemetry carried it, which
+            # left the capture page permanently showing "Scoring unavailable").
+            "scoring_available": self.scoring_available,
+            "scoring_synthetic": self.scoring_synthetic,
             "active_calls": len(self.sessions),
             "max_calls": self.max_calls,
             "engine_stats": self.engine.get_stats(),

@@ -6,7 +6,6 @@ import requests
 from datetime import datetime
 import pandas as pd
 import plotly.graph_objects as go
-import plotly.express as px
 
 st.set_page_config(
     page_title="SONIX Live",
@@ -277,51 +276,98 @@ with tab2:
     st.header("📤 Upload WAV for Analysis")
     st.write("Upload a recorded call for post-call scoring and analysis")
 
+    up_tel = get_telemetry(limit=1)
+    up_scoring = bool(up_tel and up_tel.get("scoring_available"))
+    up_synth = bool(up_tel and up_tel.get("scoring_synthetic"))
+
+    if up_tel is None:
+        st.error("Cannot reach the detection server.")
+    elif not up_scoring:
+        st.warning(
+            "**Scoring is switched off — no trained head is loaded.** The decode + "
+            "window + silence-gate path still runs, but the server would only return "
+            "mock numbers, so the score summary is withheld here. Start the server "
+            "with `--ckpt outputs/models/head.pt` to enable it."
+        )
+    elif up_synth:
+        st.warning("Untrained dev checkpoint loaded — every score below is noise.")
+
     uploaded_file = st.file_uploader("Choose a WAV file", type=["wav", "mp3"])
 
     if uploaded_file:
         st.audio(uploaded_file)
 
-        if st.button("🎯 Score This File"):
+        if st.button("🎯 Score This File", disabled=not up_scoring):
             with st.spinner("Processing... (embedding + scoring)"):
                 try:
-                    files = {"file": uploaded_file.getbuffer()}
-                    response = requests.post(f"{server_url}/api/score-file", files=files, timeout=60)
+                    files = {"file": uploaded_file.getvalue()}
+                    response = requests.post(f"{server_url}/api/score-file", files=files, timeout=120)
 
                     if response.status_code == 200:
                         result = response.json()
-                        st.success(f"✓ Scored: {result['call_id']}")
+                        summary = result.get("summary", {})
+                        st.success(
+                            f"✓ Scored: {result['call_id']} · "
+                            f"{result.get('windows_scored', 0)} windows"
+                        )
                         st.divider()
 
-                        col1, col2, col3 = st.columns(3)
-                        with col1:
-                            score = result['summary']['mean_score'] or 0
-                            label = "🚨 LIKELY AI" if score > 0.7 else ("⚠️ UNCERTAIN" if score > 0.3 else "✓ LIKELY REAL")
-                            st.metric("Mean Score", f"{score:.1%}", delta=label)
-                        with col2:
-                            st.metric("Max Score", f"{result['summary']['max_score']:.1%}")
-                        with col3:
-                            st.metric("Min Score", f"{result['summary']['min_score']:.1%}")
+                        def _pct(v):
+                            return f"{v:.1%}" if isinstance(v, (int, float)) else "—"
 
-                        st.subheader("Score Timeline")
-                        scores_dict = result.get('scores', {})
+                        mean_score = summary.get("mean_score")
+                        band, band_colour = band_for(mean_score if up_scoring else None)
+
+                        c1, c2, c3, c4 = st.columns(4)
+                        c1.metric("Mean P(AI)", _pct(mean_score))
+                        c2.metric("Max P(AI)", _pct(summary.get("max_score")))
+                        c3.metric("Min P(AI)", _pct(summary.get("min_score")))
+                        c4.markdown(
+                            f"<div style='font-size:.8rem;color:{MUTED}'>VERDICT</div>"
+                            f"<div style='font-size:1.4rem;font-weight:700;color:{band_colour}'>{band}</div>",
+                            unsafe_allow_html=True,
+                        )
+
+                        st.subheader("Risk timeline")
+                        scores_dict = result.get("scores", {})
                         if scores_dict:
-                            scores_list = [{"window": int(k), "score": v["score"]} for k, v in scores_dict.items()]
-                            scores_list.sort(key=lambda x: x["window"])
-                            df = pd.DataFrame(scores_list)
+                            rows = sorted(
+                                ({"second": int(k) * 0.5, "P(AI voice)": float(v["score"])}
+                                 for k, v in scores_dict.items()),
+                                key=lambda r: r["second"],
+                            )
+                            df = pd.DataFrame(rows)
+                            fig = go.Figure()
+                            for lo, hi, colour in ((0, AMBER_AT, GOOD),
+                                                   (AMBER_AT, RED_AT, WARNING),
+                                                   (RED_AT, 1, CRITICAL)):
+                                fig.add_hrect(y0=lo, y1=hi, fillcolor=colour, opacity=0.07,
+                                              line_width=0, layer="below")
+                            for y, lbl, colour in ((AMBER_AT, "Amber", WARNING),
+                                                   (RED_AT, "Red", CRITICAL)):
+                                fig.add_hline(y=y, line=dict(color=colour, width=1, dash="dot"),
+                                              annotation_text=lbl, annotation_position="right",
+                                              annotation_font=dict(color=colour, size=11))
+                            fig.add_trace(go.Scatter(
+                                x=df["second"], y=df["P(AI voice)"], mode="lines+markers",
+                                name="P(AI voice)", line=dict(color=SERIES_1, width=2),
+                                marker=dict(size=7, color=SERIES_1,
+                                            line=dict(color="rgba(255,255,255,0.85)", width=2)),
+                                hovertemplate="%{x:.1f}s &nbsp; P(AI) %{y:.1%}<extra></extra>",
+                            ))
+                            fig.update_yaxes(range=[0, 1], tickformat=".0%")
+                            st.plotly_chart(base_layout(fig, 360, "P(AI voice)"),
+                                            use_container_width=True)
 
-                            fig = px.line(df, x="window", y="score", markers=True,
-                                title="P(AI Voice) Over Time", labels={"score": "P(AI)", "window": "Window Index"})
-                            fig.update_yaxes(range=[0, 1])
-                            fig.update_layout(height=400, hovermode='x unified')
-                            st.plotly_chart(fig, use_container_width=True)
-
-                            st.divider()
                             json_str = json.dumps(result, indent=2)
-                            st.download_button(label="Download JSON", data=json_str,
-                                file_name=f"{result['call_id']}_scores.json", mime="application/json")
+                            st.download_button(
+                                "Download JSON", data=json_str,
+                                file_name=f"{result['call_id']}_scores.json",
+                                mime="application/json")
+                        else:
+                            st.info("No windows passed the silence gate — nothing to score.")
                     else:
-                        st.error(f"Server error: {response.text}")
+                        st.error(f"Server error {response.status_code}: {response.text}")
                 except Exception as e:
                     st.error(f"Error: {e}")
 
