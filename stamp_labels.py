@@ -85,7 +85,12 @@ def main() -> int:
         new = np.full(n, args.label, dtype=np.int8)
         if (not lab_p.exists()) or (not np.array_equal(np.load(lab_p), new)):
             tmp = lab_p.with_suffix(".npy.tmp")
-            np.save(tmp, new)
+            # np.save() APPENDS ".npy" to any path not already ending in it,
+            # so np.save(tmp, ...) would silently write "<name>.npy.tmp.npy"
+            # and the replace() below would then fail on a file that was never
+            # created. Writing through an open handle keeps the exact name.
+            with open(tmp, "wb") as fh:
+                np.save(fh, new)
             tmp.replace(lab_p)
             changed += 1
 
