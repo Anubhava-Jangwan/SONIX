@@ -179,6 +179,20 @@ else:
         st.sidebar.success("Model warm — analysis starts immediately.")
 
 st.sidebar.divider()
+st.sidebar.subheader("Silence gate")
+GATE = st.sidebar.radio(
+    "Near-silent windows", ["auto", "strict", "off"],
+    format_func=lambda g: {"auto": "Auto — scale to this clip",
+                           "strict": "Strict — studio level",
+                           "off": "Off — score every window"}[g],
+    key="vad_gate",
+)
+st.sidebar.caption("Near-silent windows are dropped before scoring: the model "
+                   "calls silence 'fake', so gating removes false alarms. The "
+                   "strict floor is studio-level and throws away quiet phone "
+                   "recordings whole, so Auto scales it to the clip.")
+
+st.sidebar.divider()
 auto_refresh = st.sidebar.checkbox("Auto refresh live-call tab", value=True)
 refresh_interval = st.sidebar.slider("Refresh interval (sec)", 1, 30, 2)
 
@@ -386,7 +400,7 @@ def run_upload_stream(uploaded_file, model_key, model_label):
         resp = requests.post(
             f"{server_url}/api/score-file",
             files={"file": (uploaded_file.name, uploaded_file.getvalue())},
-            data={"model": model_key},
+            data={"model": model_key, "vad": GATE},
             timeout=120,
         )
     except Exception as exc:
@@ -405,7 +419,7 @@ def run_upload_stream(uploaded_file, model_key, model_label):
 
     status.info(
         f"{model_label} model · {started.get('duration_s', 0):.1f}s of audio · "
-        f"{expected} windows to score…"
+        f"{expected} windows to score · silence gate: {started.get('vad', 'n/a')}"
     )
 
     result = {
@@ -458,11 +472,24 @@ def run_upload_stream(uploaded_file, model_key, model_label):
 
     n = len(result["scores"])
     if n == 0:
-        status.error(
-            "No windows were scored. Either the clip is silent, or every window "
-            "was rejected by the silence gate — try `--vad-energy 0.003` on the "
-            "server for a quiet recording."
-        )
+        call = get_call_telemetry(call_id) or {}
+        v = call.get("vad", {}) or {}
+        rb = call.get("ringbuffer", {}) or {}
+        emitted = rb.get("windows_emitted", 0)
+        if emitted == 0:
+            status.error(
+                f"No audio reached the scorer — the clip decoded to "
+                f"{started.get('duration_s', 0):.1f}s but produced no 4-second "
+                f"windows. Check the file plays."
+            )
+        else:
+            status.error(
+                f"All {emitted} windows were dropped by the silence gate "
+                f"({v.get('windows_passed', 0)} passed of "
+                f"{v.get('windows_seen', 0)} seen), so nothing was scored. "
+                f"Set the silence gate to **Off** in the sidebar and run it "
+                f"again — this recording is quieter than the gate expects."
+            )
         return
 
     band = render_upload_result(result, live=True, slots=slots)

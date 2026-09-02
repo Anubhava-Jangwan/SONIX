@@ -331,6 +331,28 @@ class SonicServer:
             "models": self.engine.model_catalogue() if not self.mock else [],
         })
 
+    @staticmethod
+    def _adaptive_vad_floor(samples, frame: int = 400):
+        """Pick a silence-gate energy floor from the clip's own speech level.
+
+        The gate's default floor is a FIXED 0.01 RMS (~-40 dBFS per 25 ms
+        frame), tuned for studio-level speech. A phone recording, a quiet room
+        or a distant mic sits entirely below it, so every window is thrown away
+        as "silence" and the upload scores nothing at all -- which is what the
+        dashboard was reporting. Scaling the floor to the clip keeps genuine
+        digital silence out while letting quiet speech through.
+
+        Returns (floor, speech_rms, floor_dbfs) or None if the clip is empty.
+        """
+        w = np.asarray(samples, dtype=np.float32).reshape(-1)
+        if w.size < frame:
+            return None
+        nf = w.size // frame
+        rms = np.sqrt(np.mean(np.square(w[:nf * frame].reshape(nf, frame).astype(np.float64)), axis=1))
+        speech = float(np.percentile(rms, 90))          # a loud frame, not the peak
+        floor = float(np.clip(speech * 0.12, 0.0006, 0.01))
+        return floor, speech, 20.0 * np.log10(max(floor, 1e-12))
+
     async def _feed_upload(self, call_id: str, session, source, chunk: int = 8000,
                            pace: float = 0.02):
         """Push an uploaded file into a session in the background.
@@ -370,6 +392,7 @@ class SonicServer:
             if not file_field:
                 return web.json_response({"error": "No file provided"}, status=400)
 
+            gate = (data.get('vad') or 'auto').strip().lower()
             requested = (data.get('model') or '').strip() or None
             if requested and not self.mock:
                 try:
@@ -417,11 +440,27 @@ class SonicServer:
                             f"repeat-padded to one full window")
             expected_windows = (n - win) // hop + 1
 
+            # Silence gate: "off" scores every window, "strict" keeps the
+            # fixed studio-level default, "auto" (the default) scales the floor
+            # to this clip so a quiet recording is not discarded wholesale.
+            vad_floor = getattr(self, 'vad_energy', None)
+            vad_note = "server default"
+            if gate == "off":
+                vad_floor, vad_note = 0.0, "disabled - every window scored"
+            elif gate != "strict" and vad_floor is None:
+                source._load()
+                adapt = self._adaptive_vad_floor(source._samples)
+                if adapt:
+                    vad_floor, speech, floor_db = adapt
+                    vad_note = (f"auto {vad_floor:.5f} ({floor_db:.1f} dBFS) "
+                                f"from speech level {speech:.5f}")
+
             session = Session(call_id, source, pairing_code="upload_mode",
                               pairing_expiry_sec=1,
-                              vad_energy=getattr(self, 'vad_energy', None),
+                              vad_energy=vad_floor,
                               model_key=model_key)
             session.expected_windows = int(expected_windows)
+            logger.info(f"[{call_id}] silence gate: {vad_note}")
 
             await session.request_consent()
             await session.on_pairing_approved()
@@ -437,6 +476,7 @@ class SonicServer:
                     "model": model_key,
                     "duration_s": round(float(duration), 3),
                     "expected_windows": int(expected_windows),
+                    "vad": vad_note,
                     "poll": f"/api/telemetry?call_id={call_id}",
                 })
 

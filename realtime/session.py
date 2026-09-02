@@ -112,8 +112,17 @@ class Session:
         self.ringbuffer = RingBuffer()       # [capacity=64000 samples @ 16kHz = 4s]
         # Browser mic audio is often far quieter than the studio speech the
         # default floor assumes, so the gate is tunable from the server.
-        self.vad = (VAD(threshold_energy=vad_energy) if vad_energy is not None
-                    else VAD())
+        # vad_energy == 0 means "score everything": the energy floor alone is
+        # not enough to disable the gate, because the zero-crossing ceiling and
+        # the 20%-of-frames rule can still reject a whole window (fricative-
+        # heavy or very short speech). Open all three.
+        if vad_energy is not None and float(vad_energy) <= 0.0:
+            self.vad = VAD(threshold_energy=0.0, zcr_ceiling=1.0,
+                           min_speech_ratio=0.0)
+        elif vad_energy is not None:
+            self.vad = VAD(threshold_energy=vad_energy)
+        else:
+            self.vad = VAD()
 
         # Windows that passed VAD (ready for scoring)
         self.pending_windows: List[np.ndarray] = []

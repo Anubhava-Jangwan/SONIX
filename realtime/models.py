@@ -25,9 +25,30 @@ REGISTRY = {
         "outputs/models/head_robust.pt",
         "Clean + G.711 + RawBoost channel/impulsive augmentation.",
     ),
+    "robust_v2": (
+        "Robust v2 (+ RIR/MUSAN)",
+        "outputs/models/head_robust_v2.pt",
+        "Clean + G.711 + RawBoost + room reverb and MUSAN noise. The only head "
+        "trained on audio whose silences contain room tone rather than digital "
+        "silence -- i.e. the one aimed at our real-clip false alarms.",
+    ),
+    "full_ho": (
+        "Full + Indic (holdout-safe)",
+        "outputs/models/head_full_ho.pt",
+        "Clean + G.711 + RawBoost + RIR/MUSAN + IndicVoices, with 12% of the "
+        "Indic recordings held out of training. Genuine Indian speech flagged "
+        "0.02% vs 57% for baseline; DF21 EER 5.27% vs 9.48%. The only head "
+        "safe to quote Indic numbers from.",
+    ),
 }
 
-DEFAULT_KEY = "baseline"
+# The head the server loads and the dashboard opens on when nothing else is
+# named. head_full_ho is best on every axis measured so far -- DF21 EER,
+# dev EER, and genuine-Indian-speech false alarms -- with no trade-off against
+# detection. If it is missing from outputs/models/, the server falls back to
+# whichever registered head IS present, so a teammate without the file still
+# gets a working server.
+DEFAULT_KEY = "full_ho"
 
 
 def resolve_ckpt(ckpt_path):
