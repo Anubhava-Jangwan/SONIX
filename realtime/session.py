@@ -128,11 +128,14 @@ class Session:
         self.pending_windows: List[np.ndarray] = []
 
         # Scoring can fall behind real time (cold model, contended GPU, several
-        # calls at once). Windows overlap by 87.5%, so an old pending window says
-        # almost nothing a newer one does not - drop the oldest instead of growing
-        # an unbounded queue and drifting further behind with every hop. The count
-        # is surfaced in telemetry so a drop is visible rather than silent.
-        self.max_pending_windows = 16        # 8 s of backlog at a 0.5 s hop
+        # calls at once). For live mic calls, bounding backlog prevents drift.
+        # For uploaded recordings, we MUST score all windows without dropping.
+        is_upload = (
+            getattr(source, 'is_file', False)
+            or hasattr(source, 'file_path')
+            or str(call_id).startswith('upload_')
+        )
+        self.max_pending_windows = None if is_upload else 32
         self.windows_dropped_backlog = 0
 
         # Primary-model results: {window_idx: {"timestamp": float, "score": float}}

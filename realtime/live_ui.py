@@ -363,7 +363,7 @@ def _series_from_scores(scores):
     return times, raw, smoothed, bands
 
 
-def render_upload_result(result, live=False, slots=None):
+def render_upload_result(result, live=False, slots=None, frame_id=0):
     """Draw one frame of an upload's timeline. Used both during streaming
     (into pre-made placeholders) and to redraw the last completed run."""
     times, raw, smoothed, bands = _series_from_scores(result["scores"])
@@ -378,9 +378,10 @@ def render_upload_result(result, live=False, slots=None):
         c3.metric("Max", f"{np.max(raw):.1%}" if raw else "—")
         c4.metric("% windows ≥ red", f"{np.mean(np.array(raw) >= RED_AT):.0%}" if raw else "—")
         if raw:
-            st.plotly_chart(upload_chart(times, raw, smoothed),
-                            use_container_width=True,
-                            key=f"chart_{result['call_id']}_static")
+            fig = upload_chart(times, raw, smoothed)
+            if fig:
+                st.plotly_chart(fig, use_container_width=True,
+                                key=f"chart_static_{result['call_id']}")
         return band
 
     slots["band"].markdown(band_card(band, result["label"], latest),
@@ -393,9 +394,13 @@ def render_upload_result(result, live=False, slots=None):
         c4.metric("% windows ≥ red",
                   f"{np.mean(np.array(raw) >= RED_AT):.0%}" if raw else "—")
     if raw:
-        slots["chart"].plotly_chart(
-            upload_chart(times, raw, smoothed), use_container_width=True,
-            key=f"chart_{result['call_id']}_{len(raw)}")
+        fig = upload_chart(times, raw, smoothed)
+        if fig:
+            with slots["chart"].container():
+                st.plotly_chart(
+                    fig, use_container_width=True,
+                    key=f"chart_{result['call_id']}_f{frame_id}"
+                )
     return band
 
 
@@ -454,6 +459,8 @@ def run_upload_stream(uploaded_file, model_key, model_label):
     deadline = time.time() + 900
     stall_since = time.time()
     last_count = 0
+    frame_idx = 0
+    last_rendered_n = -1
 
     while time.time() < deadline:
         call = get_call_telemetry(call_id)
@@ -464,7 +471,11 @@ def run_upload_stream(uploaded_file, model_key, model_label):
         result["scores"] = call.get("scores", {}) or {}
         n = len(result["scores"])
         progress.progress(min(1.0, n / expected))
-        render_upload_result(result, live=True, slots=slots)
+        
+        if n != last_rendered_n:
+            frame_idx += 1
+            render_upload_result(result, live=True, slots=slots, frame_id=frame_idx)
+            last_rendered_n = n
 
         if n > last_count:
             last_count = n
@@ -507,7 +518,7 @@ def run_upload_stream(uploaded_file, model_key, model_label):
             )
         return
 
-    band = render_upload_result(result, live=True, slots=slots)
+    band = render_upload_result(result, live=True, slots=slots, frame_id=frame_idx + 1)
     status.success(
         f"Done — {n} windows scored by the {model_label} model. Final band: {band}."
     )

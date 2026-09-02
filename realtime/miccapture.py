@@ -200,7 +200,7 @@ function setBlock(eyebrow, text, why, colour, mono){
 }
 
 function renderBand(){
-  if (pairingCode){
+  if (pairingCode && !scoreHistory.length){
     setBlock("Pairing code", pairingCode,
              "Approve this code in the dashboard. Audio is buffered, not scored, until you do.",
              "var(--accent)", true);
@@ -210,7 +210,7 @@ function renderBand(){
     setBlock("Risk band", "—", "Press Start capture to begin.", "var(--muted)", false);
     return;
   }
-  if (!scoringAvailable){
+  if (!scoringAvailable && !scoreHistory.length){
     setBlock("Risk band", "Scoring unavailable",
              "Server is running without a trained head (--ckpt). Capture is live; no verdict is shown.",
              "var(--muted)", false);
@@ -439,11 +439,13 @@ async function start(){
     }
     if (m.type === "scores" && callId && m.data && m.data[callId]){
       const entry = m.data[callId];
+      scoringAvailable = true;
+      pairingCode = null;
       // Every window of the batch, not just its last one - a batch of 8 used to
       // draw a single point and leave 3.5 s of the call unplotted.
       const items = (entry.batch && entry.batch.length) ? entry.batch : [entry];
       items.forEach(it => {
-        if (scoringAvailable && it.score !== null && it.score !== undefined)
+        if (it && it.score !== null && it.score !== undefined)
           pushScore(it.t, it.score);
       });
       lastScore = smoothedTail();

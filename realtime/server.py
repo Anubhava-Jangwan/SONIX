@@ -292,8 +292,10 @@ class SonicServer:
         # The engine only scores sessions in LISTENING/SCORING. Until pairing is
         # approved nothing is scored and the dashboard looks silently broken --
         # which is exactly what it did. --auto-approve skips that for demos.
-        if getattr(self, 'auto_approve', False):
+        is_auto = bool(getattr(self, 'auto_approve', False))
+        if is_auto:
             await session.on_pairing_approved()
+            pairing_code = None
             logger.info(f"[{call_id}] auto-approved (--auto-approve): scoring now")
 
         await self.engine.add_session(session)
@@ -307,13 +309,20 @@ class SonicServer:
             "pairing_code": pairing_code,
             "sample_rate": sample_rate,
         }))
-        await self._broadcast({
-            "type": "pairing_request",
-            "call_id": call_id,
-            "pairing_code": pairing_code,
-            "expires_in": 120,
-            "caller": source.caller,
-        })
+        if is_auto:
+            await ws.send_str(json.dumps({
+                "type": "call_state",
+                "call_id": call_id,
+                "state": "listening"
+            }))
+        else:
+            await self._broadcast({
+                "type": "pairing_request",
+                "call_id": call_id,
+                "pairing_code": pairing_code,
+                "expires_in": 120,
+                "caller": source.caller,
+            })
         logger.info(f"Mic call {call_id} started @ {sample_rate} Hz, code {pairing_code}")
 
     async def http_approve_handler(self, request):
