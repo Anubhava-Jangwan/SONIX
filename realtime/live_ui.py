@@ -256,6 +256,24 @@ def audio_path_chart(windows, t0):
 def render_upload_panel(key: str):
     """Post-call scoring for a recorded clip. Takes a widget-key prefix because
     it renders in two places and Streamlit needs distinct widget ids."""
+    # Checked upfront rather than only after scoring, so a clip is never sent
+    # to a server that would only return mock numbers for it - the button
+    # itself says why before anyone wastes the upload.
+    up_tel = get_telemetry(limit=1)
+    up_scoring = bool(up_tel and up_tel.get("scoring_available"))
+    up_synth = bool(up_tel and up_tel.get("scoring_synthetic"))
+    if up_tel is None:
+        st.error("Cannot reach the detection server.")
+    elif not up_scoring:
+        st.warning(
+            "**Scoring is switched off — no trained head is loaded.** The decode, "
+            "windowing and silence-gate path still runs, but the server would only "
+            "return mock numbers, so scoring is disabled here. Start the server "
+            "with `--ckpt outputs/models/head.pt` to enable it."
+        )
+    elif up_synth:
+        st.warning("Untrained dev checkpoint loaded — every score below is noise.")
+
     uploaded_file = st.file_uploader("WAV or MP3 recording", type=["wav", "mp3"],
                                      key=f"{key}_uploader")
     if not uploaded_file:
@@ -263,19 +281,20 @@ def render_upload_panel(key: str):
         return
 
     st.audio(uploaded_file)
-    if not st.button("Score this file", type="primary", key=f"{key}_score"):
+    if not st.button("Score this file", type="primary", key=f"{key}_score",
+                     disabled=not up_scoring):
         return
 
     with st.spinner("Embedding and scoring..."):
         try:
-            files = {"file": uploaded_file.getbuffer()}
+            files = {"file": uploaded_file.getvalue()}
             response = requests.post(f"{server_url}/api/score-file", files=files, timeout=120)
         except Exception as e:
             st.error(f"Error: {e}")
             return
 
     if response.status_code != 200:
-        st.error(f"Server error: {response.text}")
+        st.error(f"Server error {response.status_code}: {response.text}")
         return
 
     result = response.json()
