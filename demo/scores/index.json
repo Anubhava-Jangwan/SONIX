@@ -1,0 +1,25 @@
+{
+ "model": "C:\\Users\\yugal\\OneDrive\\Desktop\\Sonix\\outputs\\models\\head.pt",
+ "amber": 0.1,
+ "red": 0.9,
+ "vad": {
+  "enabled": true,
+  "dbfs": -45.0,
+  "silence_score": 0.0
+ },
+ "generated": "2026-09-01T00:45:39",
+ "clips": [
+  {
+   "clip": "chetan voice.ogg",
+   "scores_file": "chetan voice.json",
+   "windows": 125,
+   "final_band": "GREEN"
+  },
+  {
+   "clip": "samplespeech1m.wav",
+   "scores_file": "samplespeech1m.json",
+   "windows": 113,
+   "final_band": "RED"
+  }
+ ]
+}

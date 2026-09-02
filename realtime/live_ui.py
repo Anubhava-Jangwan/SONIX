@@ -1,103 +1,73 @@
-"""SONIX live detection dashboard - Streamlit UI.
+"""SONIX Live Detection Dashboard - Streamlit UI"""
 
-Layout, in one paragraph: the live microphone panel IS the /mic page, inlined
-flush with the tab (no card, no second frame), and it owns the live verdict and
-the live chart because it gets scores over the WebSocket the instant they are
-produced. Everything Streamlit draws around it - the call detail, the audio-path
-chart, history - is polled telemetry and is therefore a couple of seconds behind;
-those two clocks must never plot the same series, or the page shows one number
-twice with a visible lag between them.
-
-The poll runs inside an st.fragment. A full-page rerun would tear down and
-remount the capture iframe, which ends the recording; a fragment reruns its own
-block only, so capture survives every refresh.
-"""
-
+import streamlit as st
 import json
-import os
 import sys
-from collections import deque
+import time
+import requests
 from datetime import datetime
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
-import plotly.express as px
 import plotly.graph_objects as go
-import requests
-import streamlit as st
-import streamlit.components.v1 as components
 
-# The smoothing and band rules the file-scoring flow already uses. demo/ is not a
-# package, so it goes on the path rather than being copied in here: a live band
-# and an uploaded-clip band must be the same decision made the same way.
-ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(ROOT / "demo"))
-# `streamlit run realtime/live_ui.py` puts realtime/ on the path, not the repo
-# root, so `realtime.miccapture` would not import without this.
-sys.path.insert(0, str(ROOT))
-import theme  # noqa: E402
-from risk import BAND_INFO, process_scores  # noqa: E402
+# The band logic lives in demo/risk.py and is what every number we have quoted
+# was produced with. Import it rather than reimplementing it here -- two copies
+# of a smoothing rule is how the live UI and the demo UI end up disagreeing
+# about the same clip in front of a judge.
+_DEMO_DIR = Path(__file__).resolve().parent.parent / "demo"
+if str(_DEMO_DIR) not in sys.path:
+    sys.path.insert(0, str(_DEMO_DIR))
+try:
+    from risk import moving_average, hysteresis_bands
+    _RISK_OK = True
+except Exception:                                   # pragma: no cover
+    _RISK_OK = False
 
-from realtime.miccapture import EMBED_HEIGHT  # noqa: E402
+    def moving_average(scores, window=5):
+        arr = np.asarray(list(scores), dtype=float)
+        return np.array([arr[max(0, i - window + 1):i + 1].mean()
+                         for i in range(arr.size)])
+
+    def hysteresis_bands(scores, amber_threshold, red_threshold, **kw):
+        return ["RED" if v >= red_threshold else
+                ("AMBER" if v >= amber_threshold else "GREEN") for v in scores]
 
 st.set_page_config(
     page_title="SONIX Live",
-    page_icon="🎙️",
+    page_icon="📱",
     layout="wide",
-    initial_sidebar_state="collapsed",
+    initial_sidebar_state="expanded"
 )
 
-st.markdown(theme.page_css(), unsafe_allow_html=True)
+st.markdown("""<style>.metric-box { padding: 1.5rem; border-radius: 0.5rem; background: #f0f2f6; }
+.score-high { color: #ff0000; font-weight: bold; } .score-low { color: #00aa00; font-weight: bold; }
+</style>""", unsafe_allow_html=True)
 
-# Env override so a second dashboard can be pointed at a second server without
-# editing the sidebar by hand: SONIX_SERVER=http://localhost:8010 streamlit run ...
-HTTP_URL = os.environ.get("SONIX_SERVER", "http://localhost:8000")
-WS_URL = HTTP_URL.replace("http://", "ws://").replace("https://", "wss://")
+# Use defaults (no secrets required)
+WS_URL = "ws://localhost:8000"
+HTTP_URL = "http://localhost:8000"
 
-# --- Palette -------------------------------------------------------------
-# Status colours are reserved for the risk band and never reused as a series
-# colour. One palette for the whole product: demo/theme.py.
-GOOD, WARNING, CRITICAL = theme.GOOD, theme.WARN, theme.CRIT
-SERIES_1, MUTED = theme.SERIES, theme.SERIES_MUTED
+st.sidebar.title("⚙️ SONIX Control")
+server_url = st.sidebar.text_input("Server URL", HTTP_URL)
+ws_url = st.sidebar.text_input("WebSocket URL", WS_URL)
 
-# Provisional thresholds. These came from the CLEAN benchmark and have NOT been
-# recalibrated on real recordings yet - Lane 1 owns that. Labelled on screen so
-# nobody mistakes them for tuned values. realtime/miccapture.py holds the same
-# two numbers for the in-page band; they must not drift apart.
-AMBER_AT, RED_AT = 0.35, 0.65
+st.title("🎯 SONIX Live Call Detection")
+st.markdown("Real-time AI voice-clone detection powered by wav2vec2 + MLP head")
 
-# How much of the timeline stays on screen while a call is live.
-ROLLING_SEC = 60.0
-
-# Toggle options are compared by identity, not by their leading character, so
-# the labels can be reworded without breaking the branch below.
-SRC_MIC = "Live microphone"
-SRC_UPLOAD = "Upload a recording"
-
-BAND_COLOUR = {"GREEN": GOOD, "AMBER": WARNING, "RED": CRITICAL}
+if 'calls' not in st.session_state:
+    st.session_state.calls = {}
 
 
-with st.sidebar:
-    st.markdown("### Connection")
-    server_url = st.text_input("Server URL", HTTP_URL)
-    ws_url = st.text_input("WebSocket URL", WS_URL)
-    st.markdown("### Refresh")
-    auto_refresh = st.checkbox("Auto refresh", value=True)
-    refresh_interval = st.slider("Every (seconds)", 1, 30, 2)
-    st.caption(
-        "Only the call detail polls. The microphone panel is pushed over the "
-        "WebSocket and updates the moment a window is scored."
-    )
-
-
-# --- Data ----------------------------------------------------------------
 def get_server_status():
+    """Fetch server status."""
     try:
         resp = requests.get(f"{server_url}/api/status", timeout=2)
         if resp.status_code == 200:
             return resp.json()
-    except Exception:
-        pass
+    except Exception as e:
+        st.warning(f"Server unreachable: {e}")
     return None
 
 
@@ -112,6 +82,33 @@ def get_telemetry(limit=240):
     return None
 
 
+def get_models():
+    """Which heads the server can score with. Empty list = mock mode."""
+    try:
+        resp = requests.get(f"{server_url}/api/models", timeout=3)
+        if resp.status_code == 200:
+            return resp.json()
+    except Exception:
+        pass
+    return {"mock": True, "default": None, "models": []}
+
+
+def get_call_telemetry(call_id, limit=2000):
+    """Telemetry for ONE call. This is what the upload tab polls while a clip
+    streams -- each poll returns every score recorded so far, which is how the
+    timeline grows in front of you instead of appearing all at once."""
+    try:
+        resp = requests.get(f"{server_url}/api/telemetry",
+                            params={"call_id": call_id, "limit": limit}, timeout=30)
+        if resp.status_code == 200:
+            return resp.json().get("calls", {}).get(call_id)
+    except Exception:
+        # A slow or dropped poll is not fatal: scores are held server-side and
+        # the next poll returns everything recorded since.
+        pass
+    return None
+
+
 def post_json(path, payload):
     try:
         return requests.post(f"{server_url}{path}", json=payload, timeout=3)
@@ -120,113 +117,146 @@ def post_json(path, payload):
         return None
 
 
-def ordered_scores(scores):
-    """Raw per-window scores in window order (JSON gives us string keys)."""
-    return [float(scores[k]["score"]) for k in sorted(scores, key=int)]
+# --- Palette -------------------------------------------------------------
+# Status colours are reserved for the risk band and never reused as a series
+# colour. Muted ink is deliberately the same in light and dark mode, so the
+# charts stay legible whichever Streamlit theme the operator is running.
+GOOD, WARNING, CRITICAL = "#0ca30c", "#fab219", "#d03b3b"
+SERIES_1, MUTED = "#2a78d6", "#898781"
+GRID = "rgba(137,135,129,0.22)"
 
+# Data-driven defaults from the eval score distribution, matching demo/app.py.
+# They came from the CLEAN benchmark and have NOT been recalibrated on real
+# recordings yet, so they are adjustable and labelled as provisional on screen.
+st.sidebar.divider()
+st.sidebar.subheader("Risk thresholds")
+AMBER_AT = st.sidebar.slider("Amber threshold", 0.05, 0.90, 0.10, 0.01)
+RED_AT = st.sidebar.slider("Red threshold", float(min(1.0, AMBER_AT + 0.05)),
+                           1.00, 0.90, 0.01)
+st.sidebar.caption("Defaults are the data-driven values from the eval score "
+                   "distribution (amber 0.10, red 0.90). Configurable per "
+                   "organisation — that is a product claim, so it is a real "
+                   "control, not decoration.")
 
-def smoothed_verdict(scores):
-    """(smoothed series, band, recommended action) from the raw window scores.
+# ---- model tabs ---------------------------------------------------------
+st.sidebar.divider()
+st.sidebar.subheader("Detection model")
 
-    Runs demo/risk.py's moving average + hysteresis - the same path a clip
-    uploaded through the demo goes down - so the band shown on a live call is
-    not a second, quietly different rule.
-    """
-    raw = ordered_scores(scores)
-    if not raw:
-        return [], None, None
-    smoothed, bands = process_scores(raw, AMBER_AT, RED_AT)
-    band = bands[-1]
-    return list(smoothed), band, BAND_INFO[band]["action"]
+_model_info = get_models()
+_catalogue = _model_info.get("models") or []
+_ready = [m for m in _catalogue if m.get("exists")]
 
-
-# --- Chrome --------------------------------------------------------------
-def section(title, hint=""):
-    """A section heading: one line of type, no box. Panels are made by the
-    content sitting on the page ground, not by drawing frames around it."""
-    st.markdown(
-        f'<div style="margin:26px 0 10px;">'
-        f'<span style="font-size:{theme.FS_CAPTION};font-weight:600;'
-        f'letter-spacing:.09em;text-transform:uppercase;color:{theme.INK_3};">'
-        f'{title}</span>'
-        + (f'<span style="font-size:{theme.FS_CAPTION};color:{theme.INK_3};'
-           f'margin-left:10px;letter-spacing:0;text-transform:none;">{hint}</span>'
-           if hint else "")
-        + "</div>",
-        unsafe_allow_html=True,
+if _model_info.get("mock"):
+    st.sidebar.error("Server is in **mock** mode — no trained head loaded, so "
+                     "no model choice and no real verdict.")
+    SELECTED_MODEL, SELECTED_LABEL = None, "Mock"
+elif not _ready:
+    st.sidebar.error("No checkpoints found under `outputs/models/`.")
+    SELECTED_MODEL, SELECTED_LABEL = None, "None"
+else:
+    _default = _model_info.get("default") or _ready[0]["key"]
+    _keys = [m["key"] for m in _ready]
+    _labels = {m["key"]: m["label"] for m in _ready}
+    SELECTED_MODEL = st.sidebar.radio(
+        "Score with", _keys,
+        index=_keys.index(_default) if _default in _keys else 0,
+        format_func=lambda k: _labels[k],
+        key="model_choice",
     )
+    SELECTED_LABEL = _labels[SELECTED_MODEL]
+    _note = next((m["note"] for m in _ready if m["key"] == SELECTED_MODEL), "")
+    st.sidebar.caption(_note)
+
+    _missing = [m["label"] for m in _catalogue if not m.get("exists")]
+    if _missing:
+        st.sidebar.caption("Not on disk yet: " + ", ".join(_missing))
+
+    if _model_info.get("warming"):
+        st.sidebar.info("Loading the wav2vec2 front-end — the first analysis "
+                        "will start once this finishes (~30–60s).")
+    elif _model_info.get("warm"):
+        st.sidebar.success("Model warm — analysis starts immediately.")
+
+st.sidebar.divider()
+st.sidebar.subheader("Silence gate")
+GATE = st.sidebar.radio(
+    "Near-silent windows", ["auto", "strict", "off"],
+    format_func=lambda g: {"auto": "Auto — scale to this clip",
+                           "strict": "Strict — studio level",
+                           "off": "Off — score every window"}[g],
+    key="vad_gate",
+)
+st.sidebar.caption("Near-silent windows are dropped before scoring: the model "
+                   "calls silence 'fake', so gating removes false alarms. The "
+                   "strict floor is studio-level and throws away quiet phone "
+                   "recordings whole, so Auto scales it to the clip.")
+
+st.sidebar.divider()
+auto_refresh = st.sidebar.checkbox("Auto refresh live-call tab", value=True)
+refresh_interval = st.sidebar.slider("Refresh interval (sec)", 1, 30, 2)
+
+
+def band_for(score):
+    if score is None:
+        return "Unscored", MUTED
+    if score >= RED_AT:
+        return "Red", CRITICAL
+    if score >= AMBER_AT:
+        return "Amber", WARNING
+    return "Green", GOOD
 
 
 def base_layout(fig, height=300, y_title=""):
-    """Single chart chrome, shared with the matplotlib timeline in demo/app.py."""
-    return theme.plotly_layout(fig, height=height, y_title=y_title)
-
-
-def live_badge():
-    """A metric-styled card with a pulsing dot, in place of a plain 'Live' text
-    metric - the one number on the page that is actually live now looks it."""
-    return (
-        f'<div style="border:{theme.BORDER};border-radius:{theme.RADIUS};'
-        f'padding:{theme.PAD_SM} {theme.PAD};background:{theme.SURFACE};">'
-        f'<div style="font-size:{theme.FS_CAPTION};letter-spacing:.08em;'
-        f'text-transform:uppercase;color:{theme.INK_3};">Connection</div>'
-        f'<div style="display:flex;align-items:center;gap:7px;margin-top:3px;'
-        f'font-size:22px;font-weight:650;color:{theme.INK};">'
-        f'<span style="width:8px;height:8px;border-radius:50%;background:{theme.GOOD};'
-        f'display:inline-block;animation:sonix-pulse 1.8s {theme.EASE} infinite;"></span>'
-        f'Live</div></div>'
+    fig.update_layout(
+        height=height,
+        margin=dict(l=8, r=8, t=8, b=8),
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        font=dict(color=MUTED, size=12),
+        hovermode="x unified",
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, x=0,
+                    bgcolor="rgba(0,0,0,0)", font=dict(size=12)),
     )
+    fig.update_xaxes(title_text="Seconds into call", gridcolor=GRID,
+                     zeroline=False, linecolor=GRID, ticks="outside", tickcolor=GRID)
+    fig.update_yaxes(title_text=y_title, gridcolor=GRID,
+                     zeroline=False, linecolor=GRID, ticks="outside", tickcolor=GRID)
+    return fig
 
 
-def risk_chart(windows, scores, t0, rolling_sec=ROLLING_SEC):
-    """P(AI voice) over time for a NON-microphone call (a phone leg).
-
-    Microphone calls do not use this: their chart lives in the capture panel,
-    where it is pushed over the socket instead of polled, so it does not lag.
-    """
+def risk_chart(windows, scores, t0):
+    """P(AI voice) over time, with the Green/Amber/Red decision bands behind it."""
     idx_to_t = {w["window_idx"]: w["t"] - t0 for w in windows if w["window_idx"] is not None}
     pts = sorted(
         ((idx_to_t.get(int(k), float(v.get("timestamp", t0)) - t0), float(v["score"]))
          for k, v in scores.items()),
         key=lambda p: p[0],
     )
+    if not pts:
+        return None
 
     xs, ys = [p[0] for p in pts], [p[1] for p in pts]
     fig = go.Figure()
-    # Thresholds are quiet dashed rules. Full-height tinted bands coloured 100%
-    # of the plot to say one thing, and made every real signal harder to read.
+    for lo, hi, colour in ((0, AMBER_AT, GOOD), (AMBER_AT, RED_AT, WARNING), (RED_AT, 1, CRITICAL)):
+        fig.add_hrect(y0=lo, y1=hi, fillcolor=colour, opacity=0.07,
+                      line_width=0, layer="below")
     for y, label, colour in ((AMBER_AT, "Amber", WARNING), (RED_AT, "Red", CRITICAL)):
         fig.add_hline(y=y, line=dict(color=colour, width=1, dash="dot"),
                       annotation_text=label, annotation_position="right",
                       annotation_font=dict(color=colour, size=11))
 
-    if pts:
-        smoothed, _bands = process_scores(ys, AMBER_AT, RED_AT)
-        # Raw sits behind, thin and muted: it is the evidence, not the verdict.
-        fig.add_trace(go.Scatter(
-            x=xs, y=ys, mode="lines+markers", name="Raw window score",
-            line=dict(color=MUTED, width=1),
-            marker=dict(size=4, color=MUTED),
-            hovertemplate="%{x:.1f}s &nbsp; raw %{y:.1%}<extra></extra>",
-        ))
-        fig.add_trace(go.Scatter(
-            x=list(xs), y=list(smoothed), mode="lines", name="Smoothed (5-window)",
-            line=dict(color=SERIES_1, width=2.2),
-            hovertemplate="%{x:.1f}s &nbsp; smoothed %{y:.1%}<extra></extra>",
-        ))
-
-    # Scroll once the call is longer than the visible span; before that, hold a
-    # full-width empty frame so the axes do not rescale under the operator.
-    t_end = max(xs[-1] if xs else 0.0, rolling_sec)
-    fig.update_xaxes(range=[max(0.0, t_end - rolling_sec), t_end])
+    fig.add_trace(go.Scatter(
+        x=xs, y=ys, mode="lines+markers", name="P(AI voice)",
+        line=dict(color=SERIES_1, width=2),
+        marker=dict(size=8, color=SERIES_1, line=dict(color="rgba(255,255,255,0.85)", width=2)),
+        hovertemplate="%{x:.1f}s &nbsp; P(AI) %{y:.1%}<extra></extra>",
+    ))
     fig.update_yaxes(range=[0, 1], tickformat=".0%")
     return base_layout(fig, 320, "P(AI voice)")
 
 
 def audio_path_chart(windows, t0):
-    """What the silence gate actually saw: speech ratio per window, and what it
-    dropped. This is the one thing the capture panel does NOT show, which is why
-    it is worth polling for."""
+    """What the silence gate actually saw: speech ratio per window, and what it dropped."""
     if not windows:
         return None
 
@@ -244,345 +274,432 @@ def audio_path_chart(windows, t0):
         fig.add_trace(go.Scatter(
             x=[r[0] for r in rej], y=[r[1] for r in rej], mode="markers",
             name=f"Dropped as silence ({len(rej)})",
-            marker=dict(size=8, color=MUTED, symbol="x",
-                        line=dict(color=theme.INK_2, width=1.5)),
+            marker=dict(size=9, color=MUTED, symbol="x",
+                        line=dict(color="rgba(255,255,255,0.85)", width=2)),
             hovertemplate="%{x:.1f}s &nbsp; dropped<extra></extra>",
         ))
     fig.update_yaxes(range=[0, 1], tickformat=".0%")
     return base_layout(fig, 240, "Speech in window")
 
 
-# --- Panels --------------------------------------------------------------
-def render_upload_panel(key: str):
-    """Post-call scoring for a recorded clip. Takes a widget-key prefix because
-    it renders in two places and Streamlit needs distinct widget ids."""
-    # Checked upfront rather than only after scoring, so a clip is never sent
-    # to a server that would only return mock numbers for it - the button
-    # itself says why before anyone wastes the upload.
-    up_tel = get_telemetry(limit=1)
-    up_scoring = bool(up_tel and up_tel.get("scoring_available"))
-    up_synth = bool(up_tel and up_tel.get("scoring_synthetic"))
-    if up_tel is None:
+BAND_STYLE = {
+    "GREEN": ("GREEN — LOW", "Proceed normally", GOOD),
+    "AMBER": ("AMBER — ELEVATED", "Call back on a number you already have", WARNING),
+    "RED": ("RED — HIGH", "Second-level approval required", CRITICAL),
+}
+
+
+def upload_chart(times, raw, smoothed):
+    """Per-window risk over the clip, with the decision bands behind it."""
+    fig = go.Figure()
+    for lo, hi, colour in ((0, AMBER_AT, GOOD), (AMBER_AT, RED_AT, WARNING),
+                           (RED_AT, 1, CRITICAL)):
+        fig.add_hrect(y0=lo, y1=hi, fillcolor=colour, opacity=0.07,
+                      line_width=0, layer="below")
+    for y, label, colour in ((AMBER_AT, "Amber", WARNING), (RED_AT, "Red", CRITICAL)):
+        fig.add_hline(y=y, line=dict(color=colour, width=1, dash="dot"),
+                      annotation_text=label, annotation_position="right",
+                      annotation_font=dict(color=colour, size=11))
+
+    fig.add_trace(go.Scatter(
+        x=times, y=raw, mode="markers", name="Per-window score",
+        marker=dict(size=6, color=MUTED, opacity=0.65),
+        hovertemplate="%{x:.1f}s &nbsp; raw %{y:.3f}<extra></extra>",
+    ))
+    fig.add_trace(go.Scatter(
+        x=times, y=smoothed, mode="lines", name="Smoothed (5-window mean)",
+        line=dict(color=SERIES_1, width=2.5),
+        hovertemplate="%{x:.1f}s &nbsp; P(AI) %{y:.1%}<extra></extra>",
+    ))
+    fig.update_yaxes(range=[0, 1], tickformat=".0%")
+    fig = base_layout(fig, 360, "P(AI voice)")
+    fig.update_xaxes(title_text="Window start (seconds into clip)")
+    return fig
+
+
+def band_card(band, label, latest):
+    name, action, colour = BAND_STYLE.get(band, BAND_STYLE["GREEN"])
+    latest_txt = f"{latest:.1%}" if latest is not None else "—"
+    return (
+        f"<div style='border:4px solid {colour};border-radius:18px;"
+        f"padding:20px;text-align:center;background:rgba(127,127,127,0.06)'>"
+        f"<div style='font-size:13px;font-weight:700;letter-spacing:2px;"
+        f"color:{MUTED}'>{label.upper()}</div>"
+        f"<div style='font-size:40px;font-weight:900;color:{colour}'>{name}</div>"
+        f"<div style='font-size:17px;font-weight:600'>{action}</div>"
+        f"<div style='font-size:13px;color:{MUTED};margin-top:6px'>"
+        f"latest window {latest_txt}</div></div>"
+    )
+
+
+def _series_from_scores(scores):
+    """{window_idx: {score}} -> (times, raw, smoothed, bands), ordered by window."""
+    pts = sorted((int(k), float(v["score"])) for k, v in scores.items())
+    if not pts:
+        return [], [], [], []
+    times = [i * 0.5 for i, _ in pts]
+    raw = [float(np.clip(v, 0.0, 1.0)) for _, v in pts]
+    smoothed = list(moving_average(raw, 5))
+    bands = hysteresis_bands(smoothed, amber_threshold=AMBER_AT,
+                             red_threshold=RED_AT, agree_count=3,
+                             history_size=5, initial_band="GREEN",
+                             warmup_windows=5)
+    return times, raw, smoothed, bands
+
+
+def render_upload_result(result, live=False, slots=None):
+    """Draw one frame of an upload's timeline. Used both during streaming
+    (into pre-made placeholders) and to redraw the last completed run."""
+    times, raw, smoothed, bands = _series_from_scores(result["scores"])
+    band = bands[-1] if bands else "GREEN"
+    latest = raw[-1] if raw else None
+
+    if slots is None:
+        st.markdown(band_card(band, result["label"], latest), unsafe_allow_html=True)
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Windows scored", len(raw))
+        c2.metric("Mean", f"{np.mean(raw):.1%}" if raw else "—")
+        c3.metric("Max", f"{np.max(raw):.1%}" if raw else "—")
+        c4.metric("% windows ≥ red", f"{np.mean(np.array(raw) >= RED_AT):.0%}" if raw else "—")
+        if raw:
+            st.plotly_chart(upload_chart(times, raw, smoothed),
+                            use_container_width=True,
+                            key=f"chart_{result['call_id']}_static")
+        return band
+
+    slots["band"].markdown(band_card(band, result["label"], latest),
+                           unsafe_allow_html=True)
+    with slots["metrics"].container():
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Windows scored", f"{len(raw)} / {result['expected_windows']}")
+        c2.metric("Mean", f"{np.mean(raw):.1%}" if raw else "—")
+        c3.metric("Max", f"{np.max(raw):.1%}" if raw else "—")
+        c4.metric("% windows ≥ red",
+                  f"{np.mean(np.array(raw) >= RED_AT):.0%}" if raw else "—")
+    if raw:
+        slots["chart"].plotly_chart(
+            upload_chart(times, raw, smoothed), use_container_width=True,
+            key=f"chart_{result['call_id']}_{len(raw)}")
+    return band
+
+
+def run_upload_stream(uploaded_file, model_key, model_label):
+    """Send the file, then poll the live engine and redraw as scores land.
+
+    The server returns as soon as the clip is queued, so what you watch here is
+    the engine actually working through the windows -- the same code path a
+    live call takes. Nothing is precomputed.
+    """
+    status = st.empty()
+    progress = st.progress(0.0)
+    slots = {"band": st.empty(), "metrics": st.empty(), "chart": st.empty()}
+
+    status.info(f"Uploading and starting the {model_label} model…")
+    try:
+        resp = requests.post(
+            f"{server_url}/api/score-file",
+            files={"file": (uploaded_file.name, uploaded_file.getvalue())},
+            data={"model": model_key, "vad": GATE},
+            timeout=120,
+        )
+    except Exception as exc:
+        status.error(f"Could not reach the server: {exc}")
+        progress.empty()
+        return
+
+    if resp.status_code != 200:
+        status.error(f"Server refused the file: {resp.text}")
+        progress.empty()
+        return
+
+    started = resp.json()
+    call_id = started["call_id"]
+    expected = max(1, int(started.get("expected_windows") or 1))
+
+    status.info(
+        f"{model_label} model · {started.get('duration_s', 0):.1f}s of audio · "
+        f"{expected} windows to score · silence gate: {started.get('vad', 'n/a')}"
+    )
+
+    result = {
+        "call_id": call_id,
+        "name": uploaded_file.name,
+        "model": model_key,
+        "label": model_label,
+        "expected_windows": expected,
+        "duration_s": started.get("duration_s"),
+        "amber": AMBER_AT,
+        "red": RED_AT,
+        "scores": {},
+    }
+
+    # The first poll can be slow: on a cold server the 300M front-end loads
+    # here. Allow generously for that, then require steady progress.
+    deadline = time.time() + 900
+    stall_since = time.time()
+    last_count = 0
+
+    while time.time() < deadline:
+        call = get_call_telemetry(call_id)
+        if call is None:
+            time.sleep(0.4)
+            continue
+
+        result["scores"] = call.get("scores", {}) or {}
+        n = len(result["scores"])
+        progress.progress(min(1.0, n / expected))
+        render_upload_result(result, live=True, slots=slots)
+
+        if n > last_count:
+            last_count = n
+            stall_since = time.time()
+
+        if n >= expected:
+            break
+        # Feed finished and nothing new for 15s: the silence gate dropped the
+        # rest. That is a real outcome, not a hang - say so rather than spin.
+        if call.get("feed_done") and time.time() - stall_since > 15:
+            status.warning(
+                f"Stopped at {n} of {expected} windows — the remaining windows "
+                "were dropped by the silence gate before scoring."
+            )
+            break
+        time.sleep(0.4)
+
+    post_json("/api/end-call", {"call_id": call_id})
+    progress.empty()
+
+    n = len(result["scores"])
+    if n == 0:
+        call = get_call_telemetry(call_id) or {}
+        v = call.get("vad", {}) or {}
+        rb = call.get("ringbuffer", {}) or {}
+        emitted = rb.get("windows_emitted", 0)
+        if emitted == 0:
+            status.error(
+                f"No audio reached the scorer — the clip decoded to "
+                f"{started.get('duration_s', 0):.1f}s but produced no 4-second "
+                f"windows. Check the file plays."
+            )
+        else:
+            status.error(
+                f"All {emitted} windows were dropped by the silence gate "
+                f"({v.get('windows_passed', 0)} passed of "
+                f"{v.get('windows_seen', 0)} seen), so nothing was scored. "
+                f"Set the silence gate to **Off** in the sidebar and run it "
+                f"again — this recording is quieter than the gate expects."
+            )
+        return
+
+    band = render_upload_result(result, live=True, slots=slots)
+    status.success(
+        f"Done — {n} windows scored by the {model_label} model. Final band: {band}."
+    )
+    st.caption(
+        f"Thresholds: amber ≥ {AMBER_AT:.0%}, red ≥ {RED_AT:.0%}. Band uses a "
+        "5-window moving average with hysteresis (3 of 5 must agree), so a "
+        "single odd window cannot flip the verdict."
+    )
+    st.download_button(
+        "Download scores as JSON", data=json.dumps(result, indent=2),
+        file_name=f"{call_id}_scores.json", mime="application/json",
+        key=f"dl_{call_id}",
+    )
+    st.session_state.last_upload = result
+
+
+tab1, tab2, tab3, tab4 = st.tabs(["📞 Live Calls", "📤 Upload File", "📋 History", "ℹ️ Status"])
+
+# TAB 1: LIVE CALLS
+with tab1:
+    telemetry = get_telemetry()
+
+    if telemetry is None:
         st.error("Cannot reach the detection server.")
-    elif not up_scoring:
-        st.warning(
-            "**Scoring is switched off — no trained head is loaded.** The decode, "
-            "windowing and silence-gate path still runs, but the server would only "
-            "return mock numbers, so scoring is disabled here. Start the server "
-            "with `--ckpt outputs/models/head.pt` to enable it."
-        )
-    elif up_synth:
-        st.warning("Untrained dev checkpoint loaded — every score below is noise.")
-
-    uploaded_file = st.file_uploader("WAV or MP3 recording", type=["wav", "mp3"],
-                                     key=f"{key}_uploader")
-    if not uploaded_file:
-        st.caption("Post-call scoring: the whole clip is windowed and scored server-side.")
-        return
-
-    st.audio(uploaded_file)
-    if not st.button("Score this file", type="primary", key=f"{key}_score",
-                     disabled=not up_scoring):
-        return
-
-    with st.spinner("Embedding and scoring..."):
-        try:
-            files = {"file": uploaded_file.getvalue()}
-            response = requests.post(f"{server_url}/api/score-file", files=files, timeout=120)
-        except Exception as e:
-            st.error(f"Error: {e}")
-            return
-
-    if response.status_code != 200:
-        st.error(f"Server error {response.status_code}: {response.text}")
-        return
-
-    result = response.json()
-    scores_dict = result.get("scores", {})
-
-    section("Result", result["call_id"])
-    if scores_dict:
-        smoothed, band, action = smoothed_verdict(scores_dict)
-        st.markdown(
-            theme.risk_card(f"{band.title()} · {smoothed[-1]:.0%}", action,
-                            BAND_COLOUR[band], eyebrow="Risk band"),
-            unsafe_allow_html=True,
-        )
-        # History tab reads this - a session-scoped ring of the last 5 scored
-        # uploads, newest first. Not a database: this is a demo dashboard, and
-        # a browser-session list is what "recently scored" needs to mean here.
-        history = st.session_state.setdefault("upload_history", deque(maxlen=5))
-        history.append({
-            "filename": uploaded_file.name,
-            "call_id": result["call_id"],
-            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M"),
-            "mean_score": float(smoothed[-1]),
-            "band": band,
-            "windows_scored": len(scores_dict),
-        })
-
-    c1, c2, c3 = st.columns(3)
-    c1.metric("Mean score", f"{(result['summary']['mean_score'] or 0):.1%}")
-    c2.metric("Max score", f"{(result['summary']['max_score'] or 0):.1%}")
-    c3.metric("Min score", f"{(result['summary']['min_score'] or 0):.1%}")
-    if not scores_dict:
-        st.caption(
-            "No windows scored — the clip is shorter than the 4-second "
-            "analysis window, or the whole thing was dropped as silence."
-        )
-
-    if scores_dict:
-        section("Score timeline")
-        rows = sorted(({"window": int(k), "score": v["score"]} for k, v in scores_dict.items()),
-                      key=lambda r: r["window"])
-        fig = px.line(pd.DataFrame(rows), x="window", y="score", markers=True)
-        fig.update_traces(line=dict(color=SERIES_1, width=2.2),
-                          marker=dict(size=4, color=SERIES_1))
-        for y, colour in ((AMBER_AT, WARNING), (RED_AT, CRITICAL)):
-            fig.add_hline(y=y, line=dict(color=colour, width=1, dash="dot"))
-        base_layout(fig, 340, "P(AI voice)")
-        fig.update_xaxes(title_text="Window index")
-        fig.update_yaxes(range=[0, 1], tickformat=".0%")
-        st.plotly_chart(fig, use_container_width=True, key=f"{key}_timeline")
-
-        st.download_button("Download JSON", data=json.dumps(result, indent=2),
-                           file_name=f"{result['call_id']}_scores.json",
-                           mime="application/json", key=f"{key}_dl")
-
-
-def render_call_detail(call_id, call, scoring_available):
-    """Everything the capture panel does not already show for one call."""
-    state = call.get("state", "unknown")
-    windows = call.get("windows", [])
-    scores = call.get("scores", {})
-    vad = call.get("vad", {})
-    rb = call.get("ringbuffer", {})
-    t0 = windows[0]["t"] if windows else 0
-    is_mic = call_id.startswith("mic_")
-
-    if state == "consent_pending":
-        p1, p2 = st.columns([3, 1])
-        p1.markdown(
-            f"<div style='font-size:{theme.FS_CAPTION};letter-spacing:.09em;"
-            f"text-transform:uppercase;color:{theme.INK_3};'>Pairing code</div>"
-            f"<div style='font-family:{theme.MONO_STACK};font-size:1.7rem;"
-            f"font-weight:700;letter-spacing:.16em;color:{theme.INK};'>"
-            f"{call.get('pairing_code', '------')}</div>"
-            f"<div style='font-size:{theme.FS_CAPTION};color:{theme.INK_3};'>"
-            f"expires in {call.get('pairing_expires_in', 0)}s &mdash; audio is "
-            f"buffered but not scored until you approve</div>",
-            unsafe_allow_html=True,
-        )
-        p2.write("")
-        if p2.button("Approve", key=f"ok_{call_id}", type="primary",
-                     use_container_width=True):
-            if post_json("/api/approve", {"call_id": call_id}):
-                st.rerun()
-
-    m1, m2, m3, m4 = st.columns(4)
-    m1.metric("Duration", f"{call.get('duration', 0):.0f}s")
-    m2.metric("Windows emitted", rb.get("windows_emitted", 0))
-    m3.metric("Passed silence gate",
-              f"{vad.get('windows_passed', 0)} / {vad.get('windows_seen', 0)}")
-
-    smoothed, band_key, band_action = smoothed_verdict(scores)
-    if scoring_available and band_key:
-        m4.markdown(
-            theme.risk_card(f"{band_key.title()} · {smoothed[-1]:.0%}", band_action,
-                            BAND_COLOUR[band_key], eyebrow="Risk band", compact=True),
-            unsafe_allow_html=True,
-        )
+        st.code("python -m realtime.server --mock --ws-port 8000", language="bash")
     else:
-        m4.metric("Risk band", "—")
-
-    dropped = call.get("backlog", {}).get("dropped", 0)
-    if dropped:
-        st.warning(
-            f"Scoring fell behind real time — {dropped} oldest window(s) dropped "
-            "so the timeline keeps up with the call."
-        )
-
-    # A microphone call already has a live, socket-pushed risk chart in the
-    # panel above. Drawing a polled copy here would put the same series on
-    # screen twice, seconds apart, which reads as a bug.
-    if scoring_available and not is_mic:
-        section("Risk timeline", f"last {ROLLING_SEC:.0f}s")
-        st.plotly_chart(risk_chart(windows, scores, t0), use_container_width=True,
-                        key=f"risk_{call_id}")
-
-    section("Audio path", "what the silence gate saw")
-    fig = audio_path_chart(windows, t0)
-    if fig:
-        st.plotly_chart(fig, use_container_width=True, key=f"audio_{call_id}")
-        st.caption(
-            f"{rb.get('windows_emitted', 0)} windows of 4.0s at a 0.5s hop from "
-            f"{rb.get('seconds_buffered', 0):.1f}s of audio. "
-            f"{vad.get('windows_rejected', 0)} dropped as silence "
-            f"({vad.get('pass_rate', 0):.0%} pass rate)."
-        )
-    else:
-        st.caption("Waiting for the first 4-second window to fill.")
-
-    if st.button("End call", key=f"end_{call_id}"):
-        if post_json("/api/end-call", {"call_id": call_id}):
-            st.rerun()
-
-
-# --- Page ----------------------------------------------------------------
-st.markdown("# SONIX")
-st.caption("Real-time AI voice-clone detection · frozen wav2vec2 XLS-R front-end + trained MLP head")
-
-tab_live, tab_upload, tab_history, tab_status, tab_extension = st.tabs(
-    ["🎙️ Live", "📤 Upload", "🕘 History", "⚙️ System", "🧩 Extension"]
-)
-
-with tab_live:
-    source = st.radio("Audio source", [SRC_MIC, SRC_UPLOAD],
-                      horizontal=True, label_visibility="collapsed", key="live_source")
-
-    if source == SRC_MIC:
-        # OUTSIDE the auto-refreshing fragment on purpose. The iframe holds the
-        # open microphone, the AudioContext and the WebSocket; a rerun that
-        # remounts it silently ends the recording. Unchanged args keep the same
-        # DOM node, so it survives every fragment refresh below.
-        components.iframe(f"{server_url}/mic?embed=1", height=EMBED_HEIGHT)
-        st.caption(
-            f"Microphone access needs a secure context — use localhost. "
-            f"[Open the capture page in its own tab]({server_url}/mic) if the "
-            f"panel is blocked."
-        )
-    else:
-        render_upload_panel("home")
-
-    @st.fragment(run_every=refresh_interval if auto_refresh else None)
-    def live_detail():
-        """Polled half of the tab. A fragment, not a full rerun: a full rerun
-        would tear down the capture iframe above and end the recording."""
-        telemetry = get_telemetry()
-
-        if telemetry is None:
-            st.error("Cannot reach the detection server.")
-            st.code("python -m realtime.server --mock --ws-port 8000", language="bash")
-            return
-
         scoring_available = telemetry.get("scoring_available", False)
         calls = telemetry.get("calls", {})
         engine = telemetry.get("engine_stats", {})
 
-        section("Server")
         c1, c2, c3, c4 = st.columns(4)
-        c1.markdown(live_badge(), unsafe_allow_html=True)
-        c2.metric("Active calls",
-                  f"{telemetry.get('active_calls', 0)} / {telemetry.get('max_calls', 0)}")
+        c1.metric("Server", "Connected")
+        c2.metric("Active calls", f"{telemetry.get('active_calls', 0)} / {telemetry.get('max_calls', 0)}")
         c3.metric("Windows scored", engine.get("total_windows_scored", 0))
-        c4.metric("Scoring", "Live model" if scoring_available else "Off")
+        c4.metric("Scoring", "Live model" if scoring_available else "Not available")
 
         if not scoring_available:
             st.warning(
                 "**Risk scoring is switched off — no trained head is loaded.** "
-                "Capture, buffering and the silence gate below are live and real. "
+                "The capture, buffering and silence-gate path below is live and real. "
                 "The Green/Amber/Red band stays hidden until `head.pt` is available "
                 "and passed with `--ckpt`, so no mock number is ever shown as a verdict."
             )
 
+        st.link_button("🎤  Open microphone capture", f"{server_url}/mic")
+        st.caption("Opens in a new tab — Chrome or Edge, on this machine. "
+                   "Press Start capture there, then approve the pairing code below.")
+        st.divider()
+
         if not calls:
-            st.caption("No active calls. Press Start capture above to open one.")
-            return
-
+            st.info("No active calls. Start one from the microphone capture page.")
         for call_id, call in calls.items():
-            section(f"{call.get('caller', 'unknown')} · {call_id}",
-                    call.get("state", "unknown").upper())
-            render_call_detail(call_id, call, scoring_available)
+            state = call.get("state", "unknown")
+            windows = call.get("windows", [])
+            scores = call.get("scores", {})
+            vad = call.get("vad", {})
+            rb = call.get("ringbuffer", {})
+            t0 = windows[0]["t"] if windows else 0
 
-    live_detail()
+            score_vals = [float(v["score"]) for v in scores.values()]
+            latest = score_vals[-1] if score_vals else None
+            band, band_colour = band_for(latest if scoring_available else None)
 
-with tab_upload:
-    render_upload_panel("tab")
+            with st.expander(f"{call.get('caller', 'unknown')} — {call_id} ({state.upper()})", expanded=True):
 
-with tab_history:
-    section("Upload history", "last 5 scored files, this browser session")
-    history = list(st.session_state.get("upload_history", []))
-    if not history:
-        st.caption(
-            "Nothing scored yet. Score a file from the Upload tab and it "
-            "shows up here — most recent first."
+                if state == "consent_pending":
+                    st.markdown("**Awaiting consent.** Audio is being buffered but not scored.")
+                    p1, p2 = st.columns([2, 1])
+                    p1.markdown(
+                        f"Pairing code &nbsp; <code style='font-size:1.6rem;letter-spacing:.12em'>"
+                        f"{call.get('pairing_code', '------')}</code> &nbsp; "
+                        f"expires in {call.get('pairing_expires_in', 0)}s",
+                        unsafe_allow_html=True,
+                    )
+                    if p2.button("Approve", key=f"ok_{call_id}", type="primary"):
+                        if post_json("/api/approve", {"call_id": call_id}):
+                            st.rerun()
+                    st.divider()
+
+                m1, m2, m3, m4 = st.columns(4)
+                m1.metric("Duration", f"{call.get('duration', 0):.0f}s")
+                m2.metric("Windows emitted", rb.get("windows_emitted", 0))
+                m3.metric("Passed silence gate", f"{vad.get('windows_passed', 0)} / {vad.get('windows_seen', 0)}")
+                if scoring_available and latest is not None:
+                    m4.markdown(
+                        f"<div style='font-size:.8rem;color:{MUTED}'>RISK BAND</div>"
+                        f"<div style='font-size:1.6rem;font-weight:700;color:{band_colour}'>"
+                        f"{band} · {latest:.0%}</div>",
+                        unsafe_allow_html=True,
+                    )
+                else:
+                    m4.metric("Risk band", "—")
+
+                if scoring_available:
+                    st.markdown("**Risk timeline**")
+                    fig = risk_chart(windows, scores, t0)
+                    if fig:
+                        st.plotly_chart(fig, use_container_width=True, key=f"risk_{call_id}")
+                        st.caption(
+                            f"Thresholds: Amber ≥ {AMBER_AT:.0%}, Red ≥ {RED_AT:.0%}. "
+                            "Provisional — set on the clean benchmark, not yet recalibrated "
+                            "on real recordings."
+                        )
+                    else:
+                        st.info("No scored windows yet.")
+
+                st.markdown("**Audio path**")
+                fig2 = audio_path_chart(windows, t0)
+                if fig2:
+                    st.plotly_chart(fig2, use_container_width=True, key=f"audio_{call_id}")
+                    st.caption(
+                        f"{rb.get('windows_emitted', 0)} windows of 4.0s at a 0.5s hop from "
+                        f"{rb.get('seconds_buffered', 0):.1f}s of audio. "
+                        f"{vad.get('windows_rejected', 0)} dropped as silence "
+                        f"({vad.get('pass_rate', 0):.0%} pass rate)."
+                    )
+                else:
+                    st.info("Waiting for the first 4-second window to fill.")
+
+                if st.button("End call", key=f"end_{call_id}"):
+                    if post_json("/api/end-call", {"call_id": call_id}):
+                        st.rerun()
+
+with tab2:
+    st.header("📤 Upload a recording — scored live, window by window")
+    st.write(
+        "The file is streamed into the same live engine a real call goes "
+        "through: 4-second windows at a 0.5s hop, silence gate, then the "
+        "trained head. The timeline below fills in as the windows are scored — "
+        "it is not a result computed up front and replayed."
+    )
+
+    if SELECTED_MODEL is None:
+        st.error("No trained head is loaded, so nothing here would mean anything. "
+                 "Start the server with a checkpoint in `outputs/models/`.")
+    else:
+        st.caption(f"Scoring with **{SELECTED_LABEL}** — change it in the sidebar.")
+
+    uploaded_file = st.file_uploader("Choose an audio file",
+                                     type=["wav", "mp3", "flac", "ogg", "m4a"])
+
+    # Set while THIS script run streamed a clip. The streaming loop blocks the
+    # script, so a plain local is enough - and it keeps the auto-refresh below
+    # from rerunning and wiping the result the instant it finishes.
+    streamed_now = False
+
+    if uploaded_file:
+        st.audio(uploaded_file)
+
+        if st.button("▶  Analyse live", type="primary",
+                     disabled=SELECTED_MODEL is None):
+            streamed_now = True
+            run_upload_stream(uploaded_file, SELECTED_MODEL, SELECTED_LABEL)
+
+    last = st.session_state.get("last_upload")
+    if last and not streamed_now:
+        st.divider()
+        st.subheader("Last run")
+        st.caption(f"{last['name']} · {last['label']} model · "
+                   f"{len(last['scores'])} windows")
+        render_upload_result(last, live=False)
+        st.download_button(
+            "Download scores as JSON",
+            data=json.dumps(last, indent=2),
+            file_name=f"{last['call_id']}_scores.json",
+            mime="application/json",
+            key="dl_last_upload",
         )
-    else:
-        for entry in reversed(history):
-            c1, c2 = st.columns([3, 1])
-            with c1:
-                st.markdown(
-                    f'<div style="padding-top:10px;">'
-                    f'<div style="font-weight:600;color:{theme.INK};">{entry["filename"]}</div>'
-                    f'<div style="font-size:{theme.FS_CAPTION};color:{theme.INK_3};'
-                    f'margin-top:2px;">{entry["call_id"]} · {entry["timestamp"]} · '
-                    f'{entry["windows_scored"]} windows scored</div></div>',
-                    unsafe_allow_html=True,
-                )
-            with c2:
-                st.markdown(
-                    theme.risk_card(
-                        f'{entry["band"].title()} · {entry["mean_score"]:.0%}',
-                        "", BAND_COLOUR[entry["band"]], compact=True,
-                    ),
-                    unsafe_allow_html=True,
-                )
-            st.divider()
 
-with tab_status:
-    section("System status")
+# TAB 3: CALL HISTORY
+with tab3:
+    st.header("📋 Call History")
+    history_data = [
+        {"Caller": "+1 (508) 799-XXXX", "Duration": "0:34", "Mean Score": 0.32, "Result": "✓ REAL", "Time": "2026-08-31 14:23"},
+        {"Caller": "+1 (650) 253-XXXX", "Duration": "2:12", "Mean Score": 0.87, "Result": "🚨 AI", "Time": "2026-08-31 13:45"},
+        {"Caller": "+1 (415) 989-XXXX", "Duration": "0:18", "Mean Score": None, "Result": "⏳ PENDING*", "Time": "2026-08-31 13:10"}
+    ]
+    df = pd.DataFrame(history_data)
+    st.dataframe(df, use_container_width=True, hide_index=True)
+    st.caption("* = no consent given, scores withheld")
+
+# TAB 4: STATUS
+with tab4:
+    st.header("ℹ️ System Status")
     status = get_server_status()
-    if not status:
-        st.error("Cannot connect to server.")
-        st.code("python -m realtime.server --mock --ws-port 8000", language="bash")
+
+    if status:
+        st.subheader("Server Information")
+        col1, col2 = st.columns(2)
+        with col1:
+            st.write(f"**Mode:** {status['mode']}")
+            st.write(f"**Active Calls:** {status['active_calls']} / {status['max_calls']}")
+            st.write(f"**WebSocket Clients:** {status['ws_clients']}")
+        with col2:
+            st.write(f"**Timestamp:** {status['timestamp']}")
+            st.write(f"**Total Batches:** {status['engine_stats']['total_batches']}")
+            st.write(f"**Total Windows:** {status['engine_stats']['total_windows_scored']}")
+
+        st.divider()
+        st.subheader("Configuration")
+        st.code(f"WebSocket URL: {ws_url}\nHTTP URL: {server_url}")
     else:
-        c1, c2, c3 = st.columns(3)
-        c1.metric("Mode", status["mode"])
-        c2.metric("Active calls", f"{status['active_calls']} / {status['max_calls']}")
-        c3.metric("WebSocket clients", status["ws_clients"])
-        c1, c2, c3 = st.columns(3)
-        c1.metric("Batches", status["engine_stats"]["total_batches"])
-        c2.metric("Windows scored", status["engine_stats"]["total_windows_scored"])
-        c3.metric("Server time", str(status["timestamp"])[11:19])
-        section("Endpoints")
-        st.code(f"HTTP      {server_url}\nWebSocket {ws_url}\nCapture   {server_url}/mic")
+        st.error("❌ Cannot connect to server")
+        st.code("python -m realtime.server --mock --ws-port 8000")
 
-with tab_extension:
-    section("Chrome extension", "live risk band, overlaid on a Google Meet call")
-    st.markdown(
-        "Captures the **other participants' audio** in a Google Meet tab — "
-        "never your own microphone — and streams it to this same detection "
-        "server, showing a live Green / Amber / Red band in the toolbar popup "
-        "and as an overlay on the Meet page itself."
-    )
-    st.warning(
-        "**Chrome only.** Manifest V3, requires Chrome 116 or newer. There is "
-        "no Firefox or Safari build."
-    )
-
-    section("Install")
-    st.markdown(
-        f"""
-1. Open `chrome://extensions` in Chrome
-2. Turn on **Developer mode** (top right)
-3. Click **Load unpacked**
-4. Select the `extension/` folder inside `{ROOT.name}`
-
-The SONIX icon appears in the toolbar — pin it so it stays visible during a call.
-"""
-    )
-
-    section("Before you start")
-    st.markdown(
-        "The extension is a client only — this server does the scoring, so "
-        "it must already be running (the same one this dashboard talks to):"
-    )
-    st.code(
-        "python -m realtime.server --ckpt outputs/models/head.pt "
-        "--ws-port 8000 --mode webrtc",
-        language="bash",
-    )
-    st.caption(
-        "Then join a Meet call, open the SONIX popup, and approve the pairing "
-        "code from the Live tab here — same consent flow as the microphone panel."
-    )
+# Auto-refresh drives the live-call tab. It must never fire while an upload is
+# streaming (it would restart the script mid-run) or immediately after one
+# finishes (it would wipe the result off the screen before it could be read).
+if auto_refresh and not streamed_now:
+    time.sleep(refresh_interval)
+    st.rerun()

@@ -116,6 +116,8 @@ PAGE = r"""<!doctype html>
 
   <div class="bar">
     <button id="btn">Start capture</button>
+    <select id="modelSel" title="Model" style="font:inherit;background:var(--surface);
+            color:var(--ink);border:1px solid var(--line);border-radius:8px;padding:8px 10px"></select>
     <span class="state"><span class="dot" id="dot"></span><span id="status">Idle</span></span>
     <div class="lvl">
       <div class="lvlhead"><span class="label">Input level</span>
@@ -415,7 +417,8 @@ async function start(){
 
   ws.onopen = () => {
     setStatus("Connected — awaiting approval", "wait");
-    ws.send(JSON.stringify({ type:"start_mic_call", sample_rate: ctx.sampleRate, caller:"browser-mic" }));
+    ws.send(JSON.stringify({ type:"start_mic_call", sample_rate: ctx.sampleRate,
+                            caller:"browser-mic", model: $("modelSel").value || undefined }));
   };
 
   ws.onmessage = ev => {
@@ -517,6 +520,31 @@ function stop(){
 }
 
 $("btn").onclick = () => running ? stop() : start();
+
+// Populate the model picker before anyone clicks Start, so the choice is made
+// once up front rather than mid-capture. Same /api/models the dashboard uses.
+(async () => {
+  const sel = $("modelSel");
+  const addOpt = (value, label, selected) => {
+    const opt = document.createElement("option");
+    opt.value = value; opt.textContent = label;
+    if (selected) opt.selected = true;
+    sel.appendChild(opt);
+  };
+  try {
+    const info = await (await fetch("/api/models")).json();
+    const ready = (info.models || []).filter(m => m.exists);
+    sel.textContent = "";
+    if (info.mock || !ready.length){
+      addOpt("", "Mock", true);
+      sel.disabled = true;
+    } else {
+      // DOM nodes with textContent, not innerHTML - a model label comes from a
+      // checkpoint's own config and must never be interpreted as markup.
+      for (const m of ready) addOpt(m.key, m.label, m.key === info.default);
+    }
+  } catch (e) { sel.textContent = ""; addOpt("", "Default", true); }
+})();
 
 if (!navigator.mediaDevices || !window.AudioWorkletNode){
   $("btn").disabled = true;

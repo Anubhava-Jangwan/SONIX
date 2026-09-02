@@ -51,7 +51,7 @@ async function ensureOffscreen() {
 /* Start / stop                                                        */
 /* ------------------------------------------------------------------ */
 
-async function startCapture(serverUrl) {
+async function startCapture(serverUrl, model) {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   if (!tab) throw new Error("No active tab.");
   if (!/^https:\/\/meet\.google\.com\//.test(tab.url || "")) {
@@ -73,6 +73,7 @@ async function startCapture(serverUrl) {
     streamId,
     serverUrl,
     caller: "google-meet",
+    model,
   });
 
   updateBadge();
@@ -135,7 +136,7 @@ function pushToOverlay() {
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   // From the popup
   if (msg.type === "popup:start") {
-    startCapture(msg.serverUrl)
+    startCapture(msg.serverUrl, msg.model)
       .then(() => sendResponse({ ok: true }))
       .catch((e) => {
         state.error = e.message;

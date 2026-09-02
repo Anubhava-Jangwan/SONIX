@@ -49,6 +49,35 @@ _FE = {"loaded": False}
 _HEADS = {}                                  # resolved_ckpt(str) -> {"head","mu","sd","dev_eer"}
 _STATE = {"default_ckpt": DEFAULT_CKPT}      # kept for backward compatibility
 
+# ---------------------------------------------------------------------------
+# Voice-activity (energy) gate.
+# Near-silent windows are NOT sent to the model. Real recordings have quiet
+# gaps, and the model has no calibrated behaviour there -- the feature
+# extractor normalises every window, which amplifies noise in silence and
+# pushes the score toward "fake". Skipping them removes a major source of
+# false alarms on genuine audio (and makes scoring faster).
+# ---------------------------------------------------------------------------
+_VAD = {"enabled": True, "dbfs": -45.0, "silence_score": 0.0}
+
+
+def set_vad(enabled=True, dbfs=-45.0, silence_score=0.0):
+    """Turn the silence gate on/off and set its threshold in dBFS RMS."""
+    _VAD.update(enabled=bool(enabled), dbfs=float(dbfs),
+                silence_score=float(silence_score))
+
+
+def get_vad():
+    """Current gate settings (for the UI)."""
+    return dict(_VAD)
+
+
+def rms_dbfs(w):
+    """RMS energy of one window in dBFS. 0 = full scale, -60 = very quiet."""
+    a = np.asarray(w, dtype=np.float64)
+    r = float(np.sqrt(np.mean(np.square(a)) + 1e-12))
+    return 20.0 * np.log10(r + 1e-12)
+
+
 
 def configure(ckpt_path=DEFAULT_CKPT, model_name=None, device=None):
     """Optional: set the DEFAULT checkpoint / front-end / device used when a caller
@@ -219,37 +248,66 @@ def _load_audio(path):
 
 
 def _windows(wav):
-    """Yield fixed 64000-sample windows at 0.5 s hop, higher = more likely fake.
-    Matches Suryansh's windowing.make_windows exactly: full windows on the stride,
-    plus one zero-padded trailing window for the leftover tail, so the UI's window
-    count and this function's score count always agree."""
+    """Yield 64000-sample windows at 0.5 s hop, higher = more likely fake.
+
+    PADDING MATTERS. Measured on a real 66 s human recording: full windows
+    scored 0.12 (correctly REAL) while 1-second zero-padded excerpts of the SAME
+    voice scored 0.88 (wrongly FAKE). Zero-padding leaves a window mostly
+    silence, the feature extractor normalises across those zeros and amplifies
+    what little speech is there, and out-of-domain audio gets pushed toward
+    "fake". So:
+
+      * clip >= 4 s : emit full windows only. The trailing partial window is
+        dropped -- at a 0.5 s hop the previous window already covers that audio,
+        so nothing is lost.
+      * clip <  4 s : REPEAT-pad (loop the audio) instead of zero-padding, so
+        the window is full of real speech rather than half silence.
+    """
     n = len(wav)
     if n == 0:
         yield np.zeros(WIN, dtype=np.float32)
         return
+
+    if n < WIN:                          # short clip: repeat-pad, never zero-pad
+        reps = int(np.ceil(WIN / n))
+        yield np.tile(wav, reps)[:WIN].astype(np.float32)
+        return
+
     start = 0
     while start + WIN <= n:
         yield wav[start:start + WIN]
         start += HOP
-    if start < n:                       # zero-pad the trailing partial window
-        w = np.zeros(WIN, dtype=np.float32)
-        chunk = wav[start:]
-        w[:len(chunk)] = chunk
-        yield w
 
 
 def _score_windows(wins, ckpt_path=None) -> list:
     """Score a list of 64000-sample windows -> list[float] fake-probabilities,
-    using the shared front-end and the head for `ckpt_path`. Shared by score_file
-    (batched, offline) and score_stream (one at a time, live)."""
+    using the shared front-end and the head for `ckpt_path`.
+
+    Windows whose energy falls below the VAD threshold are never sent to the
+    model; they return `silence_score` (default 0.0 = green). Shared by
+    score_file (batched, offline) and score_stream (one at a time, live)."""
+    wins = list(wins)
+    n = len(wins)
+    if n == 0:
+        return []
+
+    if _VAD["enabled"]:
+        keep = [i for i in range(n) if rms_dbfs(wins[i]) > _VAD["dbfs"]]
+    else:
+        keep = list(range(n))
+
+    out = [float(_VAD["silence_score"])] * n
+    if not keep:
+        return out
+
     resolved = _load_head(ckpt_path)
     torch = _FE["torch"]
     fe, frontend, device = _FE["fe"], _FE["frontend"], _FE["device"]
     h = _HEADS[resolved]
     head, mu, sd = h["head"], h["mu"], h["sd"]
 
-    inputs = fe(list(wins), sampling_rate=TARGET_SR, return_tensors="pt",
-                padding=True)
+    sub = [wins[i] for i in keep]
+    inputs = fe(sub, sampling_rate=TARGET_SR, return_tensors="pt", padding=True)
     iv = inputs["input_values"].to(device)
     with torch.no_grad():
         hidden = frontend(iv).last_hidden_state              # (b, T, 1024)
@@ -257,7 +315,10 @@ def _score_windows(wins, ckpt_path=None) -> list:
         pooled = (pooled - mu) / sd
         logits = head(torch.from_numpy(pooled).float().to(device)).squeeze(1)
         probs = torch.sigmoid(logits).cpu().numpy()
-    return [float(p) for p in probs]
+
+    for i, p in zip(keep, probs):
+        out[i] = float(p)
+    return out
 
 
 def score_file(wav_path, batch=8, ckpt_path=None) -> list:

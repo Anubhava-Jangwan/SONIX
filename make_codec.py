@@ -92,6 +92,10 @@ def main() -> int:
                     help="phone codec to simulate (g711 = mu-law 8kHz)")
     ap.add_argument("--limit", type=int, default=5000,
                     help="only convert the first N clips (0 = whole split)")
+    ap.add_argument("--workers", type=int, default=1,
+                    help="convert this many clips in parallel. G.711 is cheap; "
+                         "the cost is spawning 2 ffmpeg processes per file, so "
+                         "parallelism is where the speedup is. Try 6-8.")
     args = ap.parse_args()
 
     if not have_ffmpeg():
@@ -125,27 +129,56 @@ def main() -> int:
         def tqdm(x, **k):
             return x
 
-    done = skipped = failed = 0
-    for ln in tqdm(lines, desc=f"{args.codec}:{args.split}", unit="file"):
+    # build the work list first so we can hand it to a pool
+    jobs, skipped, failed = [], 0, 0
+    for ln in lines:
         parts = ln.split()
         if len(parts) < 5:
             continue
         name = parts[1]
         src = src_flac / f"{name}.flac"
         dst = out_flac / f"{name}.flac"
-        if dst.exists():
+        if dst.exists():                 # resumable: already converted
             skipped += 1
             continue
         if not src.exists():
-            print(f"\n  ! missing source {src}")
+            print(f"  ! missing source {src}")
             failed += 1
             continue
+        jobs.append((name, str(src), str(dst)))
+
+    def _one(job):
+        name, src, dst = job
         try:
-            transcode_g711(str(src), str(dst))
-            done += 1
+            transcode_g711(src, dst)
+            return None
         except subprocess.CalledProcessError as e:
-            print(f"\n  ! ffmpeg failed on {name}: {e.stderr.decode()[:200]}")
-            failed += 1
+            return f"{name}: {e.stderr.decode()[:160]}"
+        except Exception as e:                       # noqa: BLE001
+            return f"{name}: {e}"
+
+    done = 0
+    if args.workers > 1:
+        from concurrent.futures import ThreadPoolExecutor
+        # threads, not processes: each worker just waits on ffmpeg, which
+        # releases the GIL, so N workers really do run N ffmpeg pairs at once
+        with ThreadPoolExecutor(max_workers=args.workers) as ex:
+            for err in tqdm(ex.map(_one, jobs), total=len(jobs),
+                            desc=f"{args.codec}:{args.split} x{args.workers}",
+                            unit="file"):
+                if err:
+                    print(f"\n  ! {err}")
+                    failed += 1
+                else:
+                    done += 1
+    else:
+        for job in tqdm(jobs, desc=f"{args.codec}:{args.split}", unit="file"):
+            err = _one(job)
+            if err:
+                print(f"\n  ! {err}")
+                failed += 1
+            else:
+                done += 1
 
     print(f"\n[{args.codec}/{args.split}] converted={done}  already={skipped}  "
           f"failed={failed}  total={len(lines)}")

@@ -1,0 +1,22 @@
+﻿filename,label,language,source,device 
+,,,,
+real_01.wav,0,English,Friend recording,Phone microphone
+real_02.wav,0,English,Friend recording,Phone microphone
+real_03.wav,0,English,Friend recording,Phone microphone
+real_04.wav,0,English,Friend recording,Phone microphone
+real_05.wav,0,English,Friend recording,Phone microphone
+real_06.wav,0,English,Friend recording,Phone microphone
+real_07.wav,0,English,Friend recording,Phone microphone
+real_08.wav,0,English,Friend recording,Phone microphone
+real_09.wav,0,English,Friend recording,Phone microphone
+real_10.wav,0,English,Friend recording,Phone microphone
+fake_01.wav,1,English,Free Voice clone,Direct Download
+fake_02.wav,1,English,Free Voice clone,Direct Download
+fake_03.wav,1,English,Free Voice clone,Direct Download
+fake_04.wav,1,English,Free Voice clone,Direct Download
+fake_05.wav,1,English,Free Voice clone,Direct Download
+fake_06.wav,1,English,Free Voice clone,Direct Download
+fake_07.wav,1,English,Free Voice clone,Direct Download
+fake_08.wav,1,English,Free Voice clone,Direct Download
+fake_09.wav,1,English,Free Voice clone,Direct Download
+fake_10.wav,1,English,Free Voice clone,Direct Download

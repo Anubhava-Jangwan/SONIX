@@ -111,19 +111,28 @@ def main(argv=None) -> int:
     # score in chunks -- eval is ~71k x 1024, too big to push onto a 4-6 GB card
     # (or a laptop's RAM) as one tensor
     scores = np.empty(len(X), np.float32)
+    logits_all = np.empty(len(X), np.float32)
     with torch.no_grad():
         for i in range(0, len(X), args.batch):
             xb = torch.from_numpy(X[i:i + args.batch]).float().to(device)
-            logits = model(xb).squeeze(1)
-            scores[i:i + args.batch] = torch.sigmoid(logits).cpu().numpy()
+            lg = model(xb).squeeze(1)
+            # keep every chunk's logits -- `lg` alone would only be the LAST
+            # chunk, which would silently save a truncated logits array
+            logits_all[i:i + args.batch] = lg.cpu().numpy()
+            scores[i:i + args.batch] = torch.sigmoid(lg).cpu().numpy()
     # scores: higher = more spoof
 
     out = Path(args.out_scores)
     out.mkdir(parents=True, exist_ok=True)
     np.save(out / f"{args.split}_labels.npy", y.astype(np.int64))
     np.save(out / f"{args.split}_scores.npy", scores.astype(np.float32))
-    print(f"saved -> {out / (args.split + '_labels.npy')}  and  "
-          f"{out / (args.split + '_scores.npy')}  (hand these to Yukti)")
+    # Raw logits too: sigmoid() saturates to exactly 1.0 in float32, so the
+    # logits CANNOT be recovered from the scores afterwards. Calibration
+    # (temperature scaling) needs them, so they are saved at source.
+    np.save(out / f"{args.split}_logits.npy", logits_all.astype(np.float32))
+    print(f"saved -> {out / (args.split + '_labels.npy')}  ,  "
+          f"{args.split}_scores.npy  and  {args.split}_logits.npy"
+          f"  (hand these to Yukti)")
 
     e, thr = eer(y, scores)
     print("=" * 56)

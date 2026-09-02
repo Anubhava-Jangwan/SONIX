@@ -1,0 +1,73 @@
+{
+ "model": "C:\\Users\\yugal\\OneDrive\\Desktop\\Sonix\\outputs\\models\\head_aug.pt",
+ "amber": 0.1,
+ "red": 0.9,
+ "vad": {
+  "enabled": true,
+  "dbfs": -45.0,
+  "silence_score": 0.0
+ },
+ "generated": "2026-09-01T02:01:47",
+ "clips": [
+  {
+   "clip": "fake_01.wav",
+   "scores_file": "fake_01.json",
+   "windows": 14,
+   "final_band": "AMBER"
+  },
+  {
+   "clip": "fake_02.wav",
+   "scores_file": "fake_02.json",
+   "windows": 12,
+   "final_band": "RED"
+  },
+  {
+   "clip": "fake_03.wav",
+   "scores_file": "fake_03.json",
+   "windows": 10,
+   "final_band": "RED"
+  },
+  {
+   "clip": "fake_04.wav",
+   "scores_file": "fake_04.json",
+   "windows": 11,
+   "final_band": "RED"
+  },
+  {
+   "clip": "fake_05.wav",
+   "scores_file": "fake_05.json",
+   "windows": 44,
+   "final_band": "AMBER"
+  },
+  {
+   "clip": "fake_06.wav",
+   "scores_file": "fake_06.json",
+   "windows": 17,
+   "final_band": "RED"
+  },
+  {
+   "clip": "fake_07.wav",
+   "scores_file": "fake_07.json",
+   "windows": 11,
+   "final_band": "RED"
+  },
+  {
+   "clip": "fake_08.wav",
+   "scores_file": "fake_08.json",
+   "windows": 9,
+   "final_band": "RED"
+  },
+  {
+   "clip": "fake_09.wav",
+   "scores_file": "fake_09.json",
+   "windows": 31,
+   "final_band": "RED"
+  },
+  {
+   "clip": "fake_10.wav",
+   "scores_file": "fake_10.json",
+   "windows": 8,
+   "final_band": "RED"
+  }
+ ]
+}

@@ -248,6 +248,19 @@ with st.sidebar:
     red = st.slider("Red threshold", float(min(1.0, amber + 0.05)), 1.00, 0.90, 0.01)
     st.caption("Defaults are the data-driven thresholds from the eval score distribution.")
     st.divider()
+    vad_on = st.checkbox(
+        "Ignore silent windows (VAD)", value=True,
+        help="Near-silent chunks are not scored by the model. This removes the "
+             "main cause of false alarms on quiet, genuine recordings.")
+    vad_db = st.slider("Silence threshold (dBFS)", -60.0, -25.0, -45.0, 1.0,
+                       disabled=not vad_on,
+                       help="Windows quieter than this are treated as no-speech.")
+    try:
+        from score_file import set_vad
+        set_vad(enabled=vad_on, dbfs=vad_db)
+    except Exception:
+        pass
+    st.divider()
     mode_label = st.radio(
         "Scoring mode",
         ["Real model (live stream)", "Mock streaming"],
