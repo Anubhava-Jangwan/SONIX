@@ -36,7 +36,7 @@ class SonicServer:
         self,
         port: int = 5000,
         ws_port: int = 8000,
-        mock: bool = True,
+        mock: bool = False,
         checkpoint: Optional[str] = None,
         mode: str = "voip",
         max_calls: int = 4,
@@ -47,7 +47,6 @@ class SonicServer:
         self.port = port
         self.ws_port = ws_port
         self.mock = mock
-        self.checkpoint = checkpoint
         self.mode = mode
         self.max_calls = max_calls
         self.max_batch_size = max_batch_size
@@ -55,6 +54,15 @@ class SonicServer:
         self.output_dir = output_dir
 
         Path(self.output_dir).mkdir(parents=True, exist_ok=True)
+
+        if not mock and checkpoint is None:
+            catalogue = model_registry.catalogue()
+            present = [m for m in catalogue if m["exists"]]
+            if present:
+                default = next((m for m in present if m["key"] == model_registry.DEFAULT_KEY),
+                               present[0])
+                checkpoint = default["resolved_path"]
+        self.checkpoint = checkpoint
 
         # A missing or unloadable checkpoint must not stop the server: capture,
         # consent and the audit trail are still worth demonstrating. We fall back

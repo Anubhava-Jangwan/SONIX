@@ -12,6 +12,7 @@ import logging
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Callable
 import numpy as np
+import torch
 
 from realtime import models as model_registry
 
@@ -247,10 +248,11 @@ class ScoringEngine:
 
     def _head_forward(self, head, embeddings: np.ndarray) -> np.ndarray:
         """Synchronous head inference. Called via to_thread, never inline."""
+        dev = next(head.parameters()).device if hasattr(head, "parameters") else (self.device or "cpu")
         with torch.no_grad():
-            xb = torch.from_numpy(np.ascontiguousarray(embeddings)).float().to(self.device)
+            xb = torch.from_numpy(np.ascontiguousarray(embeddings)).float().to(dev)
             logits = head(xb)
-            if logits.shape[-1] == 2:
+            if hasattr(logits, "shape") and logits.shape[-1] == 2:
                 out = torch.softmax(logits, dim=-1)[:, 1]
             else:
                 out = torch.sigmoid(logits).squeeze(-1)
