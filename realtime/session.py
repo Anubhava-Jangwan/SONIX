@@ -105,8 +105,17 @@ class Session:
         # Windows that passed VAD (ready for scoring)
         self.pending_windows: List[np.ndarray] = []
 
-        # Results: {window_idx: {"timestamp": float, "score": float}}
+        # Scoring can fall behind real time (cold model, contended GPU, several
+        # calls at once). Windows overlap by 87.5%, so an old pending window says
+        # almost nothing a newer one does not - drop the oldest instead of growing
+        # an unbounded queue and drifting further behind with every hop. The count
+        # is surfaced in telemetry so a drop is visible rather than silent.
+        self.max_pending_windows = 16        # 8 s of backlog at a 0.5 s hop
+        self.windows_dropped_backlog = 0
+
+        # Primary-model results: {window_idx: {"timestamp": float, "score": float}}
         self.scores: Dict[int, Dict] = {}
+        self.scores_by_model: Dict[str, Dict[int, Dict]] = {}
 
         # For ordering
         self.window_count = 0
@@ -213,10 +222,36 @@ class Session:
 
             if passed:
                 self.pending_windows.append(window)
+                self._trim_pending()
                 logger.debug(f"[{self.call_id}] Window {self.window_count} passed VAD")
                 self.window_count += 1
             else:
                 logger.debug(f"[{self.call_id}] Window rejected by VAD (silence)")
+
+    def window_time(self, window_idx: int) -> Optional[float]:
+        """Seconds into the call at which this window's audio was captured.
+
+        Scoring lags capture by a batch interval plus a forward pass, so a chart
+        plotted at score-arrival time slides right and bunches up whenever the
+        scorer stalls. This is the audio clock, taken from the window log, and it
+        is what every timeline plots against.
+        """
+        t0 = self.metadata.started_at.timestamp()
+        for entry in reversed(self.window_log):
+            if entry.get("window_idx") == window_idx:
+                return entry["t"] - t0
+        return None
+
+    def _trim_pending(self):
+        """Bound the scoring backlog, oldest first. See max_pending_windows."""
+        overflow = len(self.pending_windows) - self.max_pending_windows
+        if overflow > 0:
+            del self.pending_windows[:overflow]
+            self.windows_dropped_backlog += overflow
+            logger.warning(
+                f"[{self.call_id}] Scoring is behind real time - dropped "
+                f"{overflow} oldest window(s), {self.windows_dropped_backlog} total"
+            )
 
     async def get_pending_windows(self) -> List[np.ndarray]:
         """Return all windows pending scoring (passed VAD). Clears the list after return."""
@@ -234,19 +269,35 @@ class Session:
         """
         if windows:
             self.pending_windows[:0] = windows
+            self._trim_pending()
 
-    async def record_score(self, window_idx: int, score: float, timestamp: float = None):
+    async def record_score(
+        self,
+        window_idx: int,
+        score: float,
+        timestamp: float = None,
+        model_id: str = "primary",
+        model_label: str = "Primary",
+        primary: bool = True,
+    ):
         """Record a scored window. Transitions to SCORING state if not already there."""
         if self.state == CallState.LISTENING:
             self.state = CallState.SCORING
             self._add_audit("first_score_recorded")
 
-        self.scores[window_idx] = {
+        entry = {
             "timestamp": timestamp or datetime.now().timestamp(),
             "score": float(score)
         }
+        model_scores = self.scores_by_model.setdefault(model_id, {})
+        model_scores[window_idx] = entry
 
-        logger.debug(f"[{self.call_id}] Window {window_idx} scored: {score:.2%}")
+        if primary:
+            self.scores[window_idx] = entry
+
+        logger.debug(
+            f"[{self.call_id}] Window {window_idx} scored by {model_label}: {score:.2%}"
+        )
 
     async def end_call(self):
         """Finalize call, archive metadata."""
@@ -289,7 +340,8 @@ class Session:
             "pairing_code": self.metadata.pairing_code if self.state == CallState.CONSENT_PENDING else None,
             "pairing_expires_in": int((self.metadata.pairing_expires_at - datetime.now()).total_seconds())
                 if self.state == CallState.CONSENT_PENDING else None,
-            "scores": self.scores
+            "scores": self.scores,
+            "scores_by_model": self.scores_by_model,
         }
 
     def telemetry(self, limit: int = 240) -> dict:
@@ -309,8 +361,14 @@ class Session:
             ).total_seconds(),
             "ringbuffer": rb,
             "vad": vd,
+            "backlog": {
+                "pending": len(self.pending_windows),
+                "max_pending": self.max_pending_windows,
+                "dropped": self.windows_dropped_backlog,
+            },
             "windows": self.window_log[-limit:],
             "scores": self.scores,
+            "scores_by_model": self.scores_by_model,
         }
 
     def save_audit(self, output_dir: str = "outputs/calls"):
@@ -330,7 +388,8 @@ class Session:
                 {"action": e.action, "timestamp": e.timestamp, "metadata": e.metadata}
                 for e in self.metadata.audit
             ],
-            "scores": self.scores
+            "scores": self.scores,
+            "scores_by_model": self.scores_by_model,
         }
 
         path = Path(output_dir) / f"{self.metadata.call_id}.json"

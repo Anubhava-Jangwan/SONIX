@@ -92,3 +92,11 @@ def checkpoint_available(path=None) -> bool:
         return _module().checkpoint_available(path)
     except Exception:
         return False
+
+
+def discover_checkpoints() -> list[dict]:
+    """Find available checkpoint heads without loading torch."""
+    mod = _module()
+    if hasattr(mod, "discover_checkpoints"):
+        return mod.discover_checkpoints()
+    return []

@@ -136,7 +136,15 @@ class ScoringEngine:
                     broadcast_data = {}
                     for i, call_id in enumerate(call_ids):
                         entry = broadcast_data.setdefault(call_id, {"batch": []})
-                        item = {"window_idx": window_indices[i], "score": float(scores[i])}
+                        session = self.sessions.get(call_id)
+                        item = {
+                            "window_idx": window_indices[i],
+                            "score": float(scores[i]),
+                            # Audio clock, not arrival clock - see
+                            # Session.window_time. Without it a live chart drifts
+                            # right by however far scoring is behind.
+                            "t": session.window_time(window_indices[i]) if session else None,
+                        }
                         entry["batch"].append(item)
                         entry["window_idx"] = item["window_idx"]
                         entry["score"] = item["score"]

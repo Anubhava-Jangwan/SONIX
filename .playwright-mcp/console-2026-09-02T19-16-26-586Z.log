@@ -1,0 +1,15 @@
+[    1547ms] [WARNING] Unrecognized feature: 'ambient-light-sensor'. @ http://localhost:8502/static/js/react-dom.BzV73oHg.js:0
+[    1548ms] [WARNING] Unrecognized feature: 'battery'. @ http://localhost:8502/static/js/react-dom.BzV73oHg.js:0
+[    1548ms] [WARNING] Unrecognized feature: 'document-domain'. @ http://localhost:8502/static/js/react-dom.BzV73oHg.js:0
+[    1548ms] [WARNING] Unrecognized feature: 'layout-animations'. @ http://localhost:8502/static/js/react-dom.BzV73oHg.js:0
+[    1548ms] [WARNING] Unrecognized feature: 'legacy-image-formats'. @ http://localhost:8502/static/js/react-dom.BzV73oHg.js:0
+[    1548ms] [WARNING] Unrecognized feature: 'oversized-images'. @ http://localhost:8502/static/js/react-dom.BzV73oHg.js:0
+[    1548ms] [WARNING] Unrecognized feature: 'vr'. @ http://localhost:8502/static/js/react-dom.BzV73oHg.js:0
+[    1548ms] [WARNING] Unrecognized feature: 'wake-lock'. @ http://localhost:8502/static/js/react-dom.BzV73oHg.js:0
+[  289351ms] [WARNING] WebSocket onclose @ http://localhost:8502/static/js/index.dZusM_HY.js:34
+[  289487ms] [ERROR] Cannot send rerun backMessage when disconnected from server. @ http://localhost:8502/static/js/index.dZusM_HY.js:38
+[  291474ms] [ERROR] Cannot send rerun backMessage when disconnected from server. @ http://localhost:8502/static/js/index.dZusM_HY.js:38
+[  292211ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:8502/_stcore/health:0
+[  292212ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:8502/_stcore/host-config:0
+[  292476ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:8502/_stcore/health:0
+[  293478ms] [ERROR] Cannot send rerun backMessage when disconnected from server. @ http://localhost:8502/static/js/index.dZusM_HY.js:38

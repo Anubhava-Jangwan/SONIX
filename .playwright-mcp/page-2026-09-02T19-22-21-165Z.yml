@@ -1,0 +1,70 @@
+- generic [ref=f2e2]:
+  - generic [ref=f2e8]:
+    - heading "Connection" [level=3] [ref=f2e13]
+    - generic [ref=f2e15]:
+      - paragraph [ref=f2e19]: Server URL
+      - textbox "Server URL" [ref=f2e22]:
+        - /placeholder: ""
+        - text: http://localhost:8000
+    - generic [ref=f2e24]:
+      - paragraph [ref=f2e28]: WebSocket URL
+      - textbox "WebSocket URL" [ref=f2e31]:
+        - /placeholder: ""
+        - text: ws://localhost:8000
+    - heading "Refresh" [level=3] [ref=f2e36]
+    - generic [ref=f2e39] [cursor=pointer]:
+      - checkbox "Auto refresh" [checked] [ref=f2e41]
+      - paragraph [ref=f2e49]: Auto refresh
+    - generic [ref=f2e52]:
+      - paragraph [ref=f2e56]: Every (seconds)
+      - group "Every (seconds)" [ref=f2e57]:
+        - generic [ref=f2e58]:
+          - generic [ref=f2e59]:
+            - slider "Every (seconds) Every (seconds)" [ref=f2e61]: "2"
+            - generic:
+              - generic:
+                - paragraph: "2"
+          - generic:
+            - generic:
+              - paragraph: "1"
+            - generic:
+              - paragraph: "30"
+    - paragraph [ref=f2e66]: Only the call detail polls. The microphone panel is pushed over the WebSocket and updates the moment a window is scored.
+  - generic [ref=f2e3]:
+    - banner [ref=f2e69]:
+      - button "keyboard_double_arrow_right" [ref=f2e74] [cursor=pointer]
+    - generic [ref=f2e77]:
+      - heading "SONIX" [level=1] [ref=f2e83]:
+        - text: SONIX
+        - generic [ref=f2e84]:
+          - link "Link to heading":
+            - /url: "#sonix"
+      - paragraph [ref=f2e89]: Real-time AI voice-clone detection · frozen wav2vec2 XLS-R front-end + trained MLP head
+      - generic [ref=f2e91]:
+        - tablist [ref=f2e92]:
+          - tab [ref=f2e93] [cursor=pointer]:
+            - paragraph [ref=f2e95]: 🎙️ Live
+          - tab [selected] [ref=f2e97] [cursor=pointer]:
+            - paragraph [ref=f2e99]: 📤 Upload
+          - tab [ref=f2e100] [cursor=pointer]:
+            - paragraph [ref=f2e102]: 🕘 History
+          - tab [ref=f2e103] [cursor=pointer]:
+            - paragraph [ref=f2e105]: ⚙️ System
+          - tab [ref=f2e106] [cursor=pointer]:
+            - paragraph [ref=f2e108]: 🧩 Extension
+        - tabpanel "📤 Upload" [ref=f2e204]:
+          - generic [ref=f2e205]:
+            - generic [ref=f2e207]:
+              - paragraph [ref=f2e211]: WAV or MP3 recording
+              - region "WAV or MP3 recording" [ref=f2e212] [cursor=pointer]:
+                - button "file upload"
+                - generic [ref=f2e231]:
+                  - generic "short_test.wav, 312.5KB" [ref=f2e234]:
+                    - generic [ref=f2e239]:
+                      - generic "short_test.wav" [ref=f2e240]
+                      - generic [ref=f2e241]: 312.5KB
+                    - button "Remove short_test.wav" [ref=f2e243]
+                  - button "Add files" [ref=f2e247]:
+                    - generic [ref=f2e248]: add
+            - button [active] [ref=f2e256] [cursor=pointer]:
+              - paragraph [ref=f2e261]: Score this file

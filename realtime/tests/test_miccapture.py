@@ -17,10 +17,17 @@ def test_thresholds_match_dashboard():
     assert _js_const("RED_AT") == RED_AT
 
 
-def test_page_has_band_and_spectrogram():
-    for needed in ('id="verdict"', 'id="spec"', "getByteFrequencyData",
-                   'm.type === "scores"', "scoring_available"):
+def test_page_has_band_and_score_chart():
+    for needed in ('id="headline"', 'id="graph"', 'm.type === "scores"',
+                   "scoring_available"):
         assert needed in PAGE, f"missing: {needed}"
+
+
+def test_palette_comes_from_the_shared_theme():
+    # No hand-copied hex list: the page carries theme.css_vars() verbatim.
+    import theme
+    assert theme.css_vars() in PAGE
+    assert "__TOKENS__" not in PAGE
 
 
 def test_verdict_is_gated_on_scoring_available():
@@ -31,6 +38,7 @@ def test_verdict_is_gated_on_scoring_available():
 
 if __name__ == "__main__":
     test_thresholds_match_dashboard()
-    test_page_has_band_and_spectrogram()
+    test_page_has_band_and_score_chart()
+    test_palette_comes_from_the_shared_theme()
     test_verdict_is_gated_on_scoring_available()
     print("ok")

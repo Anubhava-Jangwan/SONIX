@@ -4,6 +4,7 @@ import asyncio
 import argparse
 import logging
 import json
+import tempfile
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, Set, Optional
@@ -342,7 +343,9 @@ class SonicServer:
             call_id = f"upload_{datetime.now().isoformat().replace(':', '-')}"
             logger.info(f"Processing upload: {call_id}")
 
-            temp_path = f"/tmp/{call_id}.wav"
+            # Hardcoded "/tmp" doesn't exist on Windows - every upload 500'd
+            # with ENOENT before this. gettempdir() is the portable one.
+            temp_path = str(Path(tempfile.gettempdir()) / f"{call_id}.wav")
             with open(temp_path, 'wb') as f:
                 f.write(file_field.file.read())
 
@@ -387,6 +390,12 @@ class SonicServer:
         """Return server status."""
         return web.json_response({
             "status": "ok",
+            # The /mic page gates its whole verdict + chart on these two, and
+            # they were only ever served on /api/telemetry - so capture worked
+            # and the live chart stayed empty for good. Both endpoints answer
+            # the same question now.
+            "scoring_available": self.scoring_available,
+            "scoring_synthetic": self.scoring_synthetic,
             "mode": self.mode,
             "active_calls": len(self.sessions),
             "max_calls": self.max_calls,
