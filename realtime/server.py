@@ -364,7 +364,18 @@ class SonicServer:
                 await session.push_audio(samples)
                 await asyncio.sleep(0.01)
 
-            await asyncio.sleep(0.5)
+            # The engine scores in its own background task on a 0.5s cycle. A
+            # fixed sleep here was a race against it: ending the call as soon
+            # as the guess ran out could remove the session - and with it any
+            # chance to record a score - before the engine's next cycle fired,
+            # silently scoring 0 windows for a real clip. Wait for the backlog
+            # to actually drain instead, with a bounded timeout so a genuinely
+            # stuck engine can't hang the request forever.
+            loop = asyncio.get_event_loop()
+            deadline = loop.time() + 10.0
+            while session.pending_windows and loop.time() < deadline:
+                await asyncio.sleep(0.1)
+            await asyncio.sleep(0.2)  # let the last batch's record_score land
             await self._on_call_ended(call_id)
 
             scores_list = [s["score"] for s in session.scores.values()]
