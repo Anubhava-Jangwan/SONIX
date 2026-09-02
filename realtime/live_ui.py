@@ -11,7 +11,6 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
-import plotly.express as px
 
 # The band logic lives in demo/risk.py and is what every number we have quoted
 # was produced with. Import it rather than reimplementing it here -- two copies

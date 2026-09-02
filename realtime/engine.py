@@ -12,7 +12,6 @@ import logging
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Callable
 import numpy as np
-import torch
 
 from realtime import models as model_registry
 
@@ -26,7 +25,7 @@ class ScoringEngine:
         self,
         mock: bool = True,
         checkpoint_path: Optional[str] = None,
-        device: str = "cuda",
+        device: Optional[str] = None,
         batch_interval: float = 0.5,
         max_batch_size: int = 8,
         on_broadcast: Optional[Callable] = None

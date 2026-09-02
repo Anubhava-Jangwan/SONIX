@@ -9,6 +9,8 @@ Serves a self-contained page at /mic that:
      as binary frames
   4. shows the pairing code and waits - audio is buffered by the server but not
      scored until an operator approves the code in the dashboard
+  5. once scoring starts, plots P(AI voice) per 4-second window on a risk
+     timeline (same Green/Amber/Red bands as the dashboard and the Upload tab)
 
 getUserMedia requires a secure context. http://localhost counts as secure, so
 this works for the demo without TLS. Serving it over a LAN IP will NOT work
@@ -29,7 +31,7 @@ PAGE = r"""<!doctype html>
        font:15px/1.5 system-ui,-apple-system,Segoe UI,Roboto,sans-serif;
        display:flex;align-items:center;justify-content:center;min-height:100vh;padding:24px}
   .card{background:var(--surface);border:1px solid var(--line);border-radius:12px;
-        padding:28px;max-width:460px;width:100%}
+        padding:28px;max-width:520px;width:100%}
   h1{font-size:18px;margin:0 0 4px}
   .sub{color:var(--muted);font-size:13px;margin-bottom:22px}
   .row{display:flex;align-items:center;gap:10px;margin:14px 0}
@@ -53,8 +55,13 @@ PAGE = r"""<!doctype html>
         background:#141413;text-align:center}
   .verdict{font-size:26px;font-weight:700;line-height:1.2;font-variant-numeric:tabular-nums}
   .why{color:var(--muted);font-size:12px;margin-top:5px}
-  canvas#spec{width:100%;height:140px;display:block;margin-top:6px;border-radius:8px;
+  .metrics{display:flex;gap:8px;margin:14px 0 6px}
+  .metrics>div{flex:1;background:#141413;border:1px solid var(--line);border-radius:8px;
+               padding:8px 6px;text-align:center}
+  .metrics b{display:block;font-size:19px;font-weight:700;font-variant-numeric:tabular-nums;margin-top:2px}
+  canvas#risk{width:100%;height:170px;display:block;margin-top:6px;border-radius:8px;
               background:#0a0a0a;border:1px solid var(--line)}
+  #scorebox[hidden]{display:none}
 </style>
 <div class="card">
   <h1>SONIX &mdash; microphone capture</h1>
@@ -85,8 +92,16 @@ PAGE = r"""<!doctype html>
     <div class="why" id="why">Waiting for the first 4-second window.</div>
   </div>
 
-  <div class="label">Spectrogram &mdash; tinted by the live risk band</div>
-  <canvas id="spec" height="140"></canvas>
+  <div id="scorebox">
+    <div class="metrics">
+      <div><span class="label">Latest</span><b id="mLatest">&mdash;</b></div>
+      <div><span class="label">Mean</span><b id="mMean">&mdash;</b></div>
+      <div><span class="label">Max</span><b id="mMax">&mdash;</b></div>
+      <div><span class="label">Windows</span><b id="mN">0</b></div>
+    </div>
+    <div class="label">Risk timeline &mdash; P(AI voice) per 4&nbsp;s window</div>
+    <canvas id="risk" height="170"></canvas>
+  </div>
 
   <div class="warn" id="warn" style="display:none"></div>
 </div>
@@ -94,21 +109,27 @@ PAGE = r"""<!doctype html>
 <script>
 const WS_URL = (location.protocol === "https:" ? "wss://" : "ws://") + location.host + "/ws";
 const TARGET_SR = 16000;
+const HOP_S = 0.5;   // seconds between window starts (server RingBuffer hop)
 
 let ws = null, ctx = null, node = null, stream = null, running = false;
 let sentSamples = 0, callId = null;
 
-// Must match AMBER_AT / RED_AT in realtime/live_ui.py - the dashboard and this
-// page are two views of the same decision, and they must not disagree.
+// Must match AMBER_AT / RED_AT in realtime/live_ui.py and the extension - every
+// view of this decision has to agree.
 const AMBER_AT = 0.35, RED_AT = 0.65;
-let analyser = null, specFrame = null, scoringAvailable = false, lastScore = null;
+let scoringAvailable = false, lastScore = null;
+const scoresByIdx = new Map();   // window_idx -> P(AI) in [0,1]
 
-// [name, css colour, rgb triple for the spectrogram tint]
+const $ = id => document.getElementById(id);
+function setStatus(text, cls){ $("status").textContent = text; $("dot").className = "dot " + (cls||""); }
+function warn(msg){ $("warn").style.display = "block"; $("warn").textContent = msg; }
+
+// [name, css colour, plain-language action] - shared shape with popup.js/content.js
 function bandFor(s){
-  if (s === null)     return ["—", "var(--muted)",    [137,135,129]];
-  if (s >= RED_AT)    return ["Red",     "var(--critical)", [208, 59, 59]];
-  if (s >= AMBER_AT)  return ["Amber",   "var(--warning)",  [250,178, 25]];
-  return                     ["Green",   "var(--good)",     [ 12,163, 12]];
+  if (s === null || s === undefined) return ["—", "var(--muted)", "Waiting for the first 4-second window."];
+  if (s >= RED_AT)   return ["Red · "   + Math.round(s*100) + "%", "var(--critical)", "Likely synthetic — verify on another channel."];
+  if (s >= AMBER_AT) return ["Amber · " + Math.round(s*100) + "%", "var(--warning)",  "Uncertain — treat with caution."];
+  return                     ["Green · " + Math.round(s*100) + "%", "var(--good)",     "Consistent with a real voice."];
 }
 
 function renderBand(){
@@ -119,40 +140,86 @@ function renderBand(){
     why.textContent = "Server is running without a trained head (--ckpt). Capture is live; no verdict is shown.";
     return;
   }
-  const [name, colour] = bandFor(lastScore);
+  const [name, colour, action] = bandFor(lastScore);
+  v.textContent = name;
   v.style.color = colour;
-  if (lastScore === null){
-    v.textContent = "—";
-    why.textContent = "Waiting for the first 4-second window.";
-    return;
-  }
-  v.textContent = name + " · " + Math.round(lastScore * 100) + "%";
-  why.textContent = "P(AI voice) over the last 4 s. Amber ≥ 35%, Red ≥ 65% — provisional thresholds.";
+  why.textContent = lastScore === null
+    ? "Waiting for the first 4-second window."
+    : action + "  (Amber ≥ 35%, Red ≥ 65% — provisional thresholds)";
 }
 
-// Scrolling spectrogram: one 2px column per frame, newest on the right.
-// Tint carries the risk band, so the danger level is readable off the plot itself.
-function drawSpec(){
-  const c = $("spec"), g = c.getContext("2d"), w = c.width, h = c.height, col = 2;
-  const bins = new Uint8Array(analyser.frequencyBinCount);
-  analyser.getByteFrequencyData(bins);
-
-  g.drawImage(c, -col, 0);
-  g.clearRect(w - col, 0, col, h);
-
-  const rgb = bandFor(scoringAvailable ? lastScore : null)[2];
-  for (let y = 0; y < h; y++){
-    const mag = bins[Math.floor((1 - y / h) * (bins.length - 1))] / 255;
-    if (mag <= 0.02) continue;
-    g.fillStyle = "rgba(" + rgb[0] + "," + rgb[1] + "," + rgb[2] + "," + mag.toFixed(3) + ")";
-    g.fillRect(w - col, y, col, 1);
+function renderScores(){
+  const vals = [...scoresByIdx.values()];
+  const pct = x => (x === null || x === undefined) ? "—" : Math.round(x * 100) + "%";
+  if (vals.length){
+    const latestIdx = Math.max(...scoresByIdx.keys());
+    lastScore = scoresByIdx.get(latestIdx);
+    $("mLatest").textContent = pct(lastScore);
+    $("mMean").textContent   = pct(vals.reduce((a, b) => a + b, 0) / vals.length);
+    $("mMax").textContent    = pct(Math.max(...vals));
+    $("mN").textContent      = vals.length;
+  } else {
+    lastScore = null;
+    $("mLatest").textContent = $("mMean").textContent = $("mMax").textContent = "—";
+    $("mN").textContent = 0;
   }
-  specFrame = requestAnimationFrame(drawSpec);
+  renderBand();
+  drawRisk();
 }
 
-const $ = id => document.getElementById(id);
-function setStatus(text, cls){ $("status").textContent = text; $("dot").className = "dot " + (cls||""); }
-function warn(msg){ $("warn").style.display = "block"; $("warn").textContent = msg; }
+// Plain 2D line chart of P(AI voice) over time, with the Green/Amber/Red
+// decision bands behind it - the "danger level" plot that replaced the
+// spectrogram. No charting library: it is one <canvas> and ~30 lines.
+function drawRisk(){
+  const c = $("risk");
+  if (!c) return;
+  const dpr = window.devicePixelRatio || 1;
+  const cssW = c.clientWidth || 460, cssH = 170;
+  c.width = cssW * dpr; c.height = cssH * dpr;
+  const g = c.getContext("2d");
+  g.setTransform(dpr, 0, 0, dpr, 0, 0);
+  g.clearRect(0, 0, cssW, cssH);
+
+  const padL = 34, padR = 12, padT = 10, padB = 20;
+  const w = cssW - padL - padR, h = cssH - padT - padB;
+  const pts = [...scoresByIdx.entries()].sort((a, b) => a[0] - b[0]);
+  const maxIdx = pts.length ? pts[pts.length - 1][0] : 0;
+  const spanIdx = Math.max(20, maxIdx);          // at least 10 s of x-axis
+  const X = i => padL + (spanIdx ? (i / spanIdx) * w : 0);
+  const Y = s => padT + (1 - s) * h;
+
+  // decision bands
+  const bands = [[0, AMBER_AT, "rgba(12,163,12,0.10)"],
+                 [AMBER_AT, RED_AT, "rgba(250,178,25,0.10)"],
+                 [RED_AT, 1, "rgba(208,59,59,0.13)"]];
+  for (const [lo, hi, col] of bands){ g.fillStyle = col; g.fillRect(padL, Y(hi), w, Y(lo) - Y(hi)); }
+
+  // threshold lines
+  g.lineWidth = 1; g.font = "10px system-ui";
+  g.setLineDash([4, 3]);
+  for (const [y, col, txt] of [[AMBER_AT, "#fab219", "Amber"], [RED_AT, "#d03b3b", "Red"]]){
+    g.strokeStyle = col; g.beginPath(); g.moveTo(padL, Y(y)); g.lineTo(padL + w, Y(y)); g.stroke();
+    g.fillStyle = col; g.fillText(txt, padL + w - 32, Y(y) - 3);
+  }
+  g.setLineDash([]);
+
+  // axes
+  g.fillStyle = "#898781";
+  g.fillText("100%", 4, Y(1) + 3);
+  g.fillText("50%", 8, Y(0.5) + 3);
+  g.fillText("0%", 14, Y(0) + 3);
+  g.fillText((spanIdx * HOP_S).toFixed(0) + " s", padL + w - 26, cssH - 5);
+  g.fillText("time →", padL, cssH - 5);
+
+  // score polyline + dots
+  if (pts.length){
+    g.strokeStyle = "#3987e5"; g.lineWidth = 2; g.beginPath();
+    pts.forEach(([i, s], k) => { const x = X(i), y = Y(s); k ? g.lineTo(x, y) : g.moveTo(x, y); });
+    g.stroke();
+    g.fillStyle = "#3987e5";
+    pts.forEach(([i, s]) => { g.beginPath(); g.arc(X(i), Y(s), 2.6, 0, Math.PI * 2); g.fill(); });
+  }
+}
 
 // AudioWorklet: forward raw float32 frames to the main thread.
 const WORKLET = `
@@ -189,8 +256,18 @@ async function start(){
   // The server decides whether a verdict may be shown at all; a mock number must
   // never reach the screen dressed as one.
   try {
-    scoringAvailable = !!(await (await fetch("/api/status")).json()).scoring_available;
+    const st = await (await fetch("/api/status")).json();
+    scoringAvailable = !!st.scoring_available;
+    if (st.scoring_synthetic){
+      warn("UNTRAINED DEV CHECKPOINT. Every score below is random noise and says "
+           + "nothing about any voice. Plumbing and latency testing only — "
+           + "never show this to anyone.");
+    }
   } catch { scoringAvailable = false; }
+
+  scoresByIdx.clear();
+  $("scorebox").hidden = !scoringAvailable;
+  renderScores();
   renderBand();
 
   // Ask for 16 kHz directly. Chrome/Edge honour this; if not, we resample below.
@@ -221,8 +298,17 @@ async function start(){
       $("code").textContent = m.pairing_code;
     }
     if (m.type === "scores" && callId && m.data && m.data[callId]){
-      lastScore = m.data[callId].score;
-      renderBand();
+      if (!scoringAvailable) return;          // mock scores never reach the plot
+      const d = m.data[callId];
+      const items = (Array.isArray(d.batch) && d.batch.length)
+        ? d.batch
+        : [{ window_idx: d.window_idx, score: d.score }];
+      for (const it of items){
+        if (it && it.window_idx != null && it.score != null){
+          scoresByIdx.set(it.window_idx, Math.max(0, Math.min(1, it.score)));
+        }
+      }
+      renderScores();
     }
     if (m.type === "call_state" && m.call_id === callId){
       $("callstate").textContent = m.state.toUpperCase();
@@ -238,16 +324,6 @@ async function start(){
 
   const src = ctx.createMediaStreamSource(stream);
   node = new AudioWorkletNode(ctx, "cap");
-
-  analyser = ctx.createAnalyser();
-  analyser.fftSize = 512;               // 256 bins over 0-8 kHz at 16 kHz
-  analyser.smoothingTimeConstant = 0.6;
-  src.connect(analyser);
-
-  const c = $("spec");
-  c.width = c.clientWidth || 460;       // match CSS width, else the plot stretches
-  c.getContext("2d").clearRect(0, 0, c.width, c.height);
-  drawSpec();
 
   node.port.onmessage = ev => {
     const f32 = ev.data;
@@ -279,9 +355,9 @@ function stop(){
     if (callId) ws.send(JSON.stringify({ type:"end_call", call_id: callId }));
     ws.close();
   }
-  if (specFrame) cancelAnimationFrame(specFrame);
-  specFrame = analyser = null;
   lastScore = null;
+  scoresByIdx.clear();
+  renderScores();
   renderBand();
   if (node) node.disconnect();
   if (stream) stream.getTracks().forEach(t => t.stop());
@@ -294,6 +370,7 @@ function stop(){
 }
 
 $("btn").onclick = () => running ? stop() : start();
+window.addEventListener("resize", drawRisk);
 
 if (!navigator.mediaDevices || !window.AudioWorkletNode){
   $("btn").disabled = true;
