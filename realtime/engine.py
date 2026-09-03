@@ -316,9 +316,30 @@ class ScoringEngine:
                     self.last_error = f"{type(exc).__name__}: {exc}"
                     logger.exception(
                         "Engine: batch of %d window(s) failed for call(s) %s; "
-                        "dropping it and continuing",
+                        "shrinking and requeuing",
                         len(windows), sorted(set(call_ids)))
-                    await asyncio.sleep(self.batch_interval)
+
+                    # A batch that fails AS A BATCH usually succeeds at a
+                    # smaller size -- CUDA OOM on a 6 GB card is the common
+                    # case, and it produces exactly the symptom we saw: the
+                    # first single-window batch scores, every full batch after
+                    # it dies, and the clip ends with one score. Shrink and put
+                    # the audio back rather than dropping it on the floor.
+                    if torch.cuda.is_available():
+                        try:
+                            torch.cuda.empty_cache()
+                        except Exception:
+                            pass
+                    if len(windows) > 1:
+                        self.max_batch_size = max(1, len(windows) // 2)
+                        logger.warning("Engine: max_batch_size reduced to %d; "
+                                       "requeuing %d windows",
+                                       self.max_batch_size, len(windows))
+                        for cid, win in zip(call_ids, windows):
+                            sess = self.sessions.get(cid)
+                            if sess is not None:
+                                await sess.requeue_windows([win])
+                    await asyncio.sleep(0.2)
                     continue
 
                 for i, call_id in enumerate(call_ids):
