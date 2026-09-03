@@ -4,6 +4,7 @@ import asyncio
 import argparse
 import logging
 import json
+import os
 import tempfile
 from datetime import datetime
 from pathlib import Path
@@ -26,6 +27,8 @@ logger = logging.getLogger(__name__)
 # call recording with a bare "Content Too Large". 256 MB is far more than any
 # clip we demo and still bounded.
 MAX_UPLOAD_BYTES = 256 * 1024 * 1024
+
+
 
 
 class SonicServer:
@@ -412,6 +415,7 @@ class SonicServer:
         as the scores land. Pass wait=1 to get the old blocking behaviour back
         (used by scripts that just want the final numbers).
         """
+        temp_path = None
         try:
             data = await request.post()
             file_field = data.get('file')
@@ -592,6 +596,20 @@ class SonicServer:
         app.router.add_post('/api/approve', self.http_approve_handler)
         app.router.add_post('/api/end-call', self.http_end_call_handler)
         app.router.add_get('/mic', mic_page_handler)
+
+        # The ONE tester-facing surface: website/ served at "/", same origin as
+        # the API. Streamlit apps (demo/app.py, realtime/live_ui.py) are
+        # internal/debug only -- testers get http://localhost:8000/ and nothing
+        # else. Registered last so /ws, /api/* and /mic keep priority.
+        website_dir = Path(__file__).resolve().parent.parent / "website"
+        if (website_dir / "index.html").is_file():
+            async def _site_index(_req):
+                return web.FileResponse(website_dir / "index.html")
+            app.router.add_get('/', _site_index)
+            app.router.add_static('/', website_dir, show_index=False)
+            logger.info(f"Tester site served at http://localhost:{self.ws_port}/")
+        else:
+            logger.warning(f"website/ not found at {website_dir} -- '/' will 404")
 
         runner = web.AppRunner(app)
         await runner.setup()

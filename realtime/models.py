@@ -18,12 +18,27 @@ REGISTRY = {
     "augmented": (
         "Augmented (codec)",
         "outputs/models/head_aug.pt",
-        "Clean + G.711 mu-law copies, so phone-codec audio is in-domain.",
+        "Clean + G.711 mu-law copies, so phone-codec audio is in-domain. "
+        "Dev EER 0.24% (clean+codec dev -- not comparable to the baseline's "
+        "clean eval). No eval EER reproduced on this machine yet.",
+    ),
+    "baseline_rebuilt": (
+        "Baseline (rebuilt)",
+        "outputs/models/head_rebuilt.pt",
+        "Re-serialised copy of the baseline head for the current loader -- "
+        "same weights as Baseline. EER not separately reproduced.",
+    ),
+    "augmented_rebuilt": (
+        "Augmented (rebuilt)",
+        "outputs/models/head_aug_rebuilt.pt",
+        "Re-serialised copy of the augmented head for the current loader -- "
+        "same weights as Augmented (codec). EER not separately reproduced.",
     ),
     "robust": (
         "Robust (codec + RawBoost)",
         "outputs/models/head_robust.pt",
-        "Clean + G.711 + RawBoost channel/impulsive augmentation.",
+        "Clean + G.711 + RawBoost channel/impulsive augmentation. "
+        "DF21 / In-the-Wild EER not yet measured on this machine.",
     ),
     "robust_v2": (
         "Robust v2 (+ RIR/MUSAN)",
@@ -39,6 +54,12 @@ REGISTRY = {
         "Indic recordings held out of training. Genuine Indian speech flagged "
         "0.02% vs 57% for baseline; DF21 EER 5.27% vs 9.48%. The only head "
         "safe to quote Indic numbers from.",
+    ),
+    "full_indic_as5": (
+        "Full + Indic (AS5)",
+        "outputs/models/head_full_indic_as5.pt",
+        "Same recipe as Full + Indic, retrained variant (AS5). No reproduced "
+        "EER to quote yet -- here to test end to end.",
     ),
 }
 
