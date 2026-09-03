@@ -202,9 +202,6 @@ def page_css() -> str:
       code {{ font-family: {MONO_STACK}; color: {INK_2}; }}
       .sonix-caption {{ color: {INK_3}; font-size: {FS_CAPTION}; }}
 
-      /* Tab panel content fades/slides in once per render - a still page never
-         re-triggers this, only a tab switch or fragment refresh does. */
-      div[data-testid="stTabsPanel"] > div {{ animation: sonix-in {DUR_SLOW} {EASE}; }}
     </style>"""
 
 
@@ -226,7 +223,7 @@ def risk_card(band_name: str, action: str, colour: str, eyebrow: str = "",
     return (
         f'<div style="border:{BORDER};border-left:3px solid {colour};'
         f'border-radius:{RADIUS_SM};padding:{pad};background:{SURFACE};'
-        f'transition:border-color {DUR_MED} {EASE};animation:sonix-in {DUR_SLOW} {EASE};">'
+        f'transition:border-color {DUR_MED} {EASE};">'
         f'{eyebrow_html}'
         f'<div style="font-size:{size};font-weight:700;line-height:1.15;'
         f'white-space:nowrap;color:{colour};transition:color {DUR_MED} {EASE};">{band_name}</div>'

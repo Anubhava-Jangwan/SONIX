@@ -210,7 +210,7 @@ function renderBand(){
     setBlock("Risk band", "—", "Press Start capture to begin.", "var(--muted)", false);
     return;
   }
-  if (!scoringAvailable && !scoreHistory.length){
+  if (!scoringAvailable){
     setBlock("Risk band", "Scoring unavailable",
              "Server is running without a trained head (--ckpt). Capture is live; no verdict is shown.",
              "var(--muted)", false);
@@ -439,13 +439,20 @@ async function start(){
     }
     if (m.type === "scores" && callId && m.data && m.data[callId]){
       const entry = m.data[callId];
-      scoringAvailable = true;
+      // scoringAvailable is NOT set here. The mock engine also broadcasts
+      // "scores" messages - only /api/status's scoring_available (checked
+      // once, above) says whether a head is actually loaded. Setting it true
+      // just because a message arrived would let mock noise render as a
+      // real Green/Amber/Red verdict.
       pairingCode = null;
       // Every window of the batch, not just its last one - a batch of 8 used to
       // draw a single point and leave 3.5 s of the call unplotted.
       const items = (entry.batch && entry.batch.length) ? entry.batch : [entry];
       items.forEach(it => {
-        if (it && it.score !== null && it.score !== undefined)
+        // Gate at the point data enters state, not just at render: a mock
+        // score must never reach scoreHistory, or a later render path could
+        // show it as a real verdict.
+        if (scoringAvailable && it && it.score !== null && it.score !== undefined)
           pushScore(it.t, it.score);
       });
       lastScore = smoothedTail();
