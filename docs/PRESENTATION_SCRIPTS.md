@@ -57,68 +57,85 @@ team look unrehearsed.
 No clip, no props, no slide behind you. Just the scene. **Walk out from behind
 the laptop before you start.**
 
-> "It's twenty to ten on a Tuesday night. A woman in Jaipur picks up a call from
-> her son.
+> "It's ten to five on a Friday afternoon. The finance controller at a mid-size
+> company in Pune takes a call from her CEO.
 >
-> There's been an accident. Police are involved. He needs three lakh rupees in
-> the next twenty minutes — and please, don't tell Papa.
->
-> She knows that voice. She raised that voice. She knows exactly how it sounds
-> when he's frightened.
->
-> **She sends the money.**
->
-> **[Pause. Let it sit. Two full seconds.]**
->
-> Her son was asleep in his hostel in Pune. He hadn't made a phone call all
-> evening.
->
-> The whole attack needed thirty seconds of his voice off an Instagram story, a
-> free website, and about four minutes of somebody's time.
->
-> **[Beat. Change your tone here — from story to business. Title slide up.]**
->
-> That call is being made in this country today, and there is nothing in the
-> phone network that could have told that mother the voice wasn't her son's.
->
-> **We are Team SONIX**, and this is problem statement **SIH26104** from the AICTE
-> Cyber Security Cell — **real-time detection of AI-cloned voices in live calls.**"
-
-### Alternative scenario — use this one if the jury skews corporate
-
-> "It's 4:50 on a Friday afternoon. A finance executive at a mid-size company
-> takes a call from her CFO. He's in a meeting he can't leave, a vendor payment
-> has to clear before the banking window shuts, and he's sending the account
-> details on WhatsApp right now.
+> He's stuck in a board meeting. A vendor payment has to clear before the banking
+> window shuts at five. Eighty-two lakhs. The account details are coming on
+> WhatsApp right now, and he'll sign the paperwork on Monday.
 >
 > It's his voice. His phrasing. The way he clears his throat before he asks for
 > something.
 >
 > **She authorises the transfer.**
 >
+> **[Pause. Let it sit. Two full seconds.]**
+>
+> Her CEO was on a flight to Singapore with his phone switched off. He had been
+> in the air for two hours.
+>
+> The whole attack needed forty seconds of his voice off a company webinar on
+> YouTube, a free website, and about four minutes of somebody's time.
+>
+> **[Beat. Change your tone here — from story to business. Title slide up.]**
+>
+> By Monday morning, that money has moved through four accounts and it is gone.
+> And there is nothing in the phone network that could have told her the voice on
+> that call was not her CEO's.
+>
+> **We are Team SONIX**, and this is problem statement **SIH26104** from the AICTE
+> Cyber Security Cell — **real-time detection of AI-cloned voices in live calls.**"
+
+### Why this scenario and not a scarier one
+
+It is the one the jury can price. A cloned voice aimed at a family is
+frightening; a cloned voice aimed at a payments desk is a **quantified business
+loss with a named owner** — and it is the exact case the problem statement asks
+us to protect, because it names *"banking applications, enterprise communication
+systems and telecom operator infrastructures."*
+
+It also sets up the rest of the deck: a bank or a company is who **buys** this,
+the transfer window is **why real-time matters** (a post-call analysis is an
+autopsy), and "she authorised it" is why SONIX **flags for a human** instead of
+blocking.
+
+### Alternative scenario — use this one if the jury skews public-sector or social
+
+> "It's twenty to ten on a Tuesday night. A woman in Jaipur picks up a call from
+> her son. There's been an accident. Police are involved. He needs three lakh
+> rupees in the next twenty minutes — and please, don't tell Papa.
+>
+> She knows that voice. She raised that voice. She knows exactly how it sounds
+> when he's frightened.
+>
+> **She sends the money.**
+>
 > **[Pause.]**
 >
-> Her CFO was on a flight with his phone switched off.
->
-> Thirty seconds of him from a company webinar was all it took.
+> Her son was asleep in his hostel in Pune. He hadn't made a phone call all
+> evening. Thirty seconds of his voice off an Instagram story was all it took.
 >
 > **We are Team SONIX**, and this is problem statement **SIH26104** — real-time
 > detection of AI-cloned voices in live calls."
 
 ### Stage directions — this opening lives or dies on delivery
 
-- **Do not rush the first line.** "It's twenty to ten on a Tuesday night" should
+- **Do not rush the first line.** "It's ten to five on a Friday afternoon" should
   be said slowly enough that the room settles.
-- **Say "She sends the money" and then stop.** The silence is the hook. Count two
-  seconds in your head. It will feel like ten. Do not fill it.
-- **Deliver it flat.** No dramatics, no raised voice. Understatement lands harder.
-- **Do not say "imagine" or "picture this."** Just tell it as something that
-  happened. The moment you say "imagine", it becomes hypothetical and the room
-  relaxes.
-- **Change gear visibly** at "That call is being made in this country today" —
-  story voice to engineer voice. That switch is what makes it read as
-  professional rather than theatrical.
-- **If you are over time**, cut the Instagram sentence. Never cut the pause.
+- **Say "She authorises the transfer" and then stop.** The silence is the hook.
+  Count two seconds in your head. It will feel like ten. Do not fill it.
+- **Deliver it flat.** No dramatics, no raised voice. Understatement lands harder,
+  especially with an engineering jury.
+- **Do not say "imagine" or "picture this."** Tell it as something that happened.
+  The moment you say "imagine", it becomes hypothetical and the room relaxes.
+- **Never say a rupee figure as though it were a statistic we measured.** It is a
+  scenario, and it is framed as one. If a judge asks for a source, say: *"That's
+  an illustrative case, not our data — our measured numbers are on slide 4."*
+  That answer costs you nothing and buys you credibility for every real number
+  that follows.
+- **Change gear visibly** at "By Monday morning" — story voice to engineer voice.
+  That switch is what makes it read as professional rather than theatrical.
+- **If you are over time**, cut the YouTube sentence. Never cut the pause.
 
 ## SLIDE 2 — Idea / Solution · **SURYANSH** · 0:30
 
