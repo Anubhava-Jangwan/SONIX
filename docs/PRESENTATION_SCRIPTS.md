@@ -22,9 +22,9 @@ Companion to `docs/SONIX_MASTER.md`. That file is the facts; this file is the wo
 
 | Slide | Speaker | Time | Cumulative |
 |---|---|---|---|
-| 1 · Cold open + Title | **Suryansh** | 0:35 | 0:35 |
-| 2 · Idea / Solution | **Suryansh** | 0:35 | 1:10 |
-| 3 · Technical Approach | **Yugal** → **Akshat** | 1:05 | 2:15 |
+| 1 · Cold open + Title | **Suryansh** | 0:45 | 0:45 |
+| 2 · Idea / Solution | **Suryansh** | 0:30 | 1:15 |
+| 3 · Technical Approach | **Yugal** → **Akshat** | 1:00 | 2:15 |
 | 4 · Feasibility & Viability | **Yukti** | 0:50 | 3:05 |
 | 5 · Impact & Benefits | **Navya** | 0:35 | 3:40 |
 | 6 · Research & Datasets | **Anubhav** | 0:20 | 4:00 |
@@ -50,58 +50,81 @@ team look unrehearsed.
 
 ---
 
-## SLIDE 1 — Cold open + Title · **SURYANSH** · 0:35
+## SLIDE 1 — Cold open + Title · **SURYANSH** · 0:45
 
-### The opening — do this, it is worth more than any slide
+### The opening — tell it as a story, not as a statistic
 
-**Preferred version (needs 30 minutes of prep before the round):**
+No clip, no props, no slide behind you. Just the scene. **Walk out from behind
+the laptop before you start.**
 
-Clone Suryansh's own voice with one of the free tools we already used for the
-test set. Record it saying one plain sentence. Have it ready on the laptop.
-
-> **[Do not introduce it. Do not say a word. Press play.]**
+> "It's twenty to ten on a Tuesday night. A woman in Jaipur picks up a call from
+> her son.
 >
-> **[CLONED AUDIO, ~6 seconds]:**
-> *"Good morning. I'm Suryansh from Team SONIX, and everything I am about to
-> tell you is true."*
+> There's been an accident. Police are involved. He needs three lakh rupees in
+> the next twenty minutes — and please, don't tell Papa.
 >
-> **[Stop the audio. Wait one full second. Then speak live, same voice, same
-> room:]**
+> She knows that voice. She raised that voice. She knows exactly how it sounds
+> when he's frightened.
 >
-> "That wasn't me.
+> **She sends the money.**
 >
-> That was ten seconds of my voice, a free website, and about four minutes of
-> work. Nobody in this room could tell — and neither could my bank."
-
-**[Beat. Now the title slide.]**
-
-> "We are **Team SONIX**, and we're here for problem statement **SIH26104** from
-> the AICTE Cyber Security Cell — **real-time detection of AI-cloned voices in
-> live calls.**"
-
-**Fallback if the clone isn't ready** — still strong, no props:
-
-> "In the time it takes me to say this sentence, there is enough of my voice on
-> this recording to clone it. Not in a lab — on a free website, in about four
-> minutes.
+> **[Pause. Let it sit. Two full seconds.]**
 >
-> That is the world our banks, our helplines and our parents are already living
-> in. **We are Team SONIX**, and this is problem statement **SIH26104** — real-time
+> Her son was asleep in his hostel in Pune. He hadn't made a phone call all
+> evening.
+>
+> The whole attack needed thirty seconds of his voice off an Instagram story, a
+> free website, and about four minutes of somebody's time.
+>
+> **[Beat. Change your tone here — from story to business. Title slide up.]**
+>
+> That call is being made in this country today, and there is nothing in the
+> phone network that could have told that mother the voice wasn't her son's.
+>
+> **We are Team SONIX**, and this is problem statement **SIH26104** from the AICTE
+> Cyber Security Cell — **real-time detection of AI-cloned voices in live calls.**"
+
+### Alternative scenario — use this one if the jury skews corporate
+
+> "It's 4:50 on a Friday afternoon. A finance executive at a mid-size company
+> takes a call from her CFO. He's in a meeting he can't leave, a vendor payment
+> has to clear before the banking window shuts, and he's sending the account
+> details on WhatsApp right now.
+>
+> It's his voice. His phrasing. The way he clears his throat before he asks for
+> something.
+>
+> **She authorises the transfer.**
+>
+> **[Pause.]**
+>
+> Her CFO was on a flight with his phone switched off.
+>
+> Thirty seconds of him from a company webinar was all it took.
+>
+> **We are Team SONIX**, and this is problem statement **SIH26104** — real-time
 > detection of AI-cloned voices in live calls."
 
-**Stage directions**
-- Do not stand behind the laptop. Step forward before you press play.
-- The one-second silence after "That wasn't me" does more work than any slide.
-- Do not smile through the cold open. Deliver it flat. The joke, if any, comes later.
-- If a judge laughs or reacts — let them. Do not talk over it.
+### Stage directions — this opening lives or dies on delivery
 
----
+- **Do not rush the first line.** "It's twenty to ten on a Tuesday night" should
+  be said slowly enough that the room settles.
+- **Say "She sends the money" and then stop.** The silence is the hook. Count two
+  seconds in your head. It will feel like ten. Do not fill it.
+- **Deliver it flat.** No dramatics, no raised voice. Understatement lands harder.
+- **Do not say "imagine" or "picture this."** Just tell it as something that
+  happened. The moment you say "imagine", it becomes hypothetical and the room
+  relaxes.
+- **Change gear visibly** at "That call is being made in this country today" —
+  story voice to engineer voice. That switch is what makes it read as
+  professional rather than theatrical.
+- **If you are over time**, cut the Instagram sentence. Never cut the pause.
 
-## SLIDE 2 — Idea / Solution · **SURYANSH** · 0:35
+## SLIDE 2 — Idea / Solution · **SURYANSH** · 0:30
 
 **Visual on screen:** the attack-and-defence flow (flowchart A, `SONIX_MASTER.md` §14).
 
-> "Here's how the attack actually runs. A scammer takes seconds of public audio —
+> "That attack has three moving parts, and all of them are cheap. A scammer takes seconds of public audio —
 > a YouTube clip, a voice note, an old interview. A free tool clones it. The
 > victim's phone rings, and the voice on the other end is somebody they trust:
 > a bank official, a CEO, a family member. The money moves before anyone doubts
@@ -485,7 +508,7 @@ Silence at the end reads as confidence. Rambling reads as padding.
 
 **Two days before**
 - [ ] Every speaker has read `SONIX_MASTER.md` §6 (the numbers ledger)
-- [ ] Suryansh's cloned-voice cold open recorded, or the fallback memorised
+- [ ] Suryansh has the opening scenario memorised — including the two-second pause
 - [ ] The `sonix_real/` matched pair chosen and tested end-to-end
 - [ ] Every `[[PLACEHOLDER]]` either filled by its owner or cut from the script
 
