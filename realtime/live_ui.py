@@ -438,6 +438,7 @@ def run_upload_stream(uploaded_file, model_key, model_label):
     deadline = time.time() + 900
     stall_since = time.time()
     last_count = 0
+    last_call = {}          # last telemetry we actually received
 
     while time.time() < deadline:
         call = get_call_telemetry(call_id)
@@ -445,6 +446,7 @@ def run_upload_stream(uploaded_file, model_key, model_label):
             time.sleep(0.4)
             continue
 
+        last_call = call
         result["scores"] = call.get("scores", {}) or {}
         n = len(result["scores"])
         progress.progress(min(1.0, n / expected))
@@ -466,20 +468,40 @@ def run_upload_stream(uploaded_file, model_key, model_label):
             break
         time.sleep(0.4)
 
+    diag = last_call or (get_call_telemetry(call_id) or {})
     post_json("/api/end-call", {"call_id": call_id})
     progress.empty()
 
     n = len(result["scores"])
     if n == 0:
-        call = get_call_telemetry(call_id) or {}
-        v = call.get("vad", {}) or {}
-        rb = call.get("ringbuffer", {}) or {}
+        v = diag.get("vad", {}) or {}
+        rb = diag.get("ringbuffer", {}) or {}
         emitted = rb.get("windows_emitted", 0)
-        if emitted == 0:
+        passed = v.get("windows_passed", 0)
+        engine = (get_server_status() or {}).get("engine_stats", {}) or {}
+        if engine.get("last_error"):
+            # The scorer itself failed. Say that instead of blaming the
+            # file: every other explanation here would be a guess, and a
+            # confident wrong guess costs an hour of looking in the wrong
+            # place.
+            status.error(
+                f"The scoring engine failed on this clip: "
+                f"`{engine['last_error']}` "
+                f"({emitted} windows were produced, {passed} passed the "
+                f"silence gate, none could be scored). Check the server "
+                f"terminal for the traceback."
+            )
+        elif emitted == 0:
             status.error(
                 f"No audio reached the scorer — the clip decoded to "
                 f"{started.get('duration_s', 0):.1f}s but produced no 4-second "
                 f"windows. Check the file plays."
+            )
+        elif passed > 0:
+            status.error(
+                f"{passed} of {emitted} windows passed the silence gate but "
+                f"none came back scored — the engine is not keeping up or has "
+                f"stopped. Check the server terminal."
             )
         else:
             status.error(

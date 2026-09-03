@@ -40,6 +40,13 @@ REGISTRY = {
         "0.02% vs 57% for baseline; DF21 EER 5.27% vs 9.48%. The only head "
         "safe to quote Indic numbers from.",
     ),
+    "v3": (
+        "SONIX v3 (multilingual)",
+        "outputs/models/head_v3.pt",
+        "Clean + G.711 + RawBoost + RIR/MUSAN + IndicVoices + 35,200 Indic spoofs across "
+        "three synthesis families (MMS-TTS, IndicSynth voice conversion, channel-augmented "
+        "copies of both). The first head with Indian languages on BOTH sides of the label.",
+    ),
 }
 
 # The head the server loads and the dashboard opens on when nothing else is
@@ -48,7 +55,7 @@ REGISTRY = {
 # detection. If it is missing from outputs/models/, the server falls back to
 # whichever registered head IS present, so a teammate without the file still
 # gets a working server.
-DEFAULT_KEY = "full_ho"
+DEFAULT_KEY = "v3"
 
 
 def resolve_ckpt(ckpt_path):

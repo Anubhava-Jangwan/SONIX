@@ -4,6 +4,7 @@ import asyncio
 import argparse
 import logging
 import json
+import os
 import tempfile
 from datetime import datetime
 from pathlib import Path
@@ -26,6 +27,17 @@ logger = logging.getLogger(__name__)
 # call recording with a bare "Content Too Large". 256 MB is far more than any
 # clip we demo and still bounded.
 MAX_UPLOAD_BYTES = 256 * 1024 * 1024
+
+
+def _engine_task_died(task):
+    """Log a scoring-loop crash instead of letting asyncio swallow it."""
+    if task.cancelled():
+        return
+    exc = task.exception()
+    if exc is not None:
+        logger.critical("SCORING ENGINE STOPPED: %r - no further window "
+                        "will be scored until the server is restarted.",
+                        exc, exc_info=exc)
 
 
 class SonicServer:
@@ -412,6 +424,7 @@ class SonicServer:
         as the scores land. Pass wait=1 to get the old blocking behaviour back
         (used by scripts that just want the final numbers).
         """
+        temp_path = None
         try:
             data = await request.post()
             file_field = data.get('file')
@@ -569,6 +582,9 @@ class SonicServer:
         logger.info("=== SONIX Server Starting ===")
 
         engine_task = asyncio.create_task(self.engine.run())
+        # If the scoring loop ever dies, the server keeps accepting audio
+        # and scores nothing -- silently. Shout about it in the terminal.
+        engine_task.add_done_callback(_engine_task_died)
         logger.info(f"Engine started (mock={self.mock})")
 
         # Pay the model-loading cost now, in a thread, instead of inside the

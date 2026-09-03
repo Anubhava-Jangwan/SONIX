@@ -12,6 +12,7 @@ import logging
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Callable
 import numpy as np
+import torch
 
 from realtime import models as model_registry
 
@@ -64,6 +65,12 @@ class ScoringEngine:
 
         self.total_windows_scored = 0
         self.total_batches = 0
+
+        # Scoring-loop health. A dead loop used to be invisible: the UI
+        # could only report "nothing was scored" and every explanation it
+        # offered (bad file, silence gate) was wrong.
+        self.errors = 0
+        self.last_error = None
 
         # The front-end is ~300M parameters and takes tens of seconds to load.
         # Doing that lazily inside the first scoring batch made the first upload
@@ -285,8 +292,21 @@ class ScoringEngine:
                     continue
 
                 call_ids, window_indices, model_keys, windows = result
-                embeddings = await self._embed_windows(windows)
-                scores = await self._score_windows(embeddings, model_keys)
+                try:
+                    embeddings = await self._embed_windows(windows)
+                    scores = await self._score_windows(embeddings, model_keys)
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    # One bad batch must never end scoring for the life of
+                    # the server. It did exactly that once -- a NameError in
+                    # the head forward pass killed this task on the first
+                    # window and every later upload silently scored nothing.
+                    self.errors += 1
+                    self.last_error = f"{type(exc).__name__}: {exc}"
+                    logger.error(f"Engine: batch failed: {exc}", exc_info=True)
+                    await asyncio.sleep(0.5)
+                    continue
 
                 for i, call_id in enumerate(call_ids):
                     session = self.sessions.get(call_id)
@@ -332,6 +352,8 @@ class ScoringEngine:
             "loaded_models": sorted(self.heads.keys()),
             "warm": bool(self.warm),
             "warming": bool(self.warming),
+            "errors": int(self.errors),
+            "last_error": self.last_error,
             "default_model": self.default_key,
             "avg_windows_per_batch": (
                 self.total_windows_scored / self.total_batches if self.total_batches > 0 else 0

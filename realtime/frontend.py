@@ -6,7 +6,12 @@ came from: mean-pool the last hidden state over time -> one 1024-dim vector per
 not be reloaded per window.
 """
 
+import logging
+import time
+
 import numpy as np
+
+logger = logging.getLogger(__name__)
 
 TARGET_SR = 16000
 _STATE = {"loaded": False}
@@ -23,8 +28,22 @@ def load(model_name="facebook/wav2vec2-xls-r-300m", device=None, half=True):
         device = "cuda" if torch.cuda.is_available() else "cpu"
     use_half = bool(half) and str(device).startswith("cuda")
 
-    fe = AutoFeatureExtractor.from_pretrained(model_name)
-    model = AutoModel.from_pretrained(model_name).eval().to(device)
+    # Load from the local HF cache first. Without this, transformers asks
+    # the hub for main/model.safetensors, 404s, and then walks the repo's
+    # open pull requests looking for one -- which silently pulls ~1.2 GB
+    # and makes startup look wedged. If the cache is cold this falls back
+    # to the network and downloads once, as it should.
+    t0 = time.time()
+    try:
+        fe = AutoFeatureExtractor.from_pretrained(model_name, local_files_only=True)
+        model = AutoModel.from_pretrained(model_name, local_files_only=True)
+        logger.info("front-end loaded from local cache in %.1fs", time.time() - t0)
+    except Exception as exc:
+        logger.info("front-end not in cache (%s); downloading %s ...", exc, model_name)
+        fe = AutoFeatureExtractor.from_pretrained(model_name)
+        model = AutoModel.from_pretrained(model_name)
+        logger.info("front-end downloaded and loaded in %.1fs", time.time() - t0)
+    model = model.eval().to(device)
     if use_half:
         model.half()
     for p in model.parameters():
