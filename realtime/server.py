@@ -557,6 +557,9 @@ class SonicServer:
                 await session.push_audio(samples)
                 await asyncio.sleep(pace)
         except Exception as exc:
+            # Record it on the session too. This failing silently is exactly
+            # how a 62-window clip came back with one score and a green band.
+            session.feed_error = f"{type(exc).__name__}: {exc}"
             logger.error(f"[{call_id}] upload feed failed: {exc}", exc_info=True)
         finally:
             session.feed_done = True

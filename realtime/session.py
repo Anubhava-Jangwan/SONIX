@@ -137,6 +137,9 @@ class Session:
         )
         self.max_pending_windows = None if is_upload else 32
         self.windows_dropped_backlog = 0
+        self.window_errors = 0
+        self.last_window_error = None
+        self.feed_error = None
 
         # Primary-model results: {window_idx: {"timestamp": float, "score": float}}
         self.scores: Dict[int, Dict] = {}
@@ -229,29 +232,41 @@ class Session:
         self.ringbuffer.push(samples)
         emitted = self.ringbuffer.get_emitted_windows()
 
-        # Filter by VAD, logging every window either way
+        # Filter by VAD, logging every window either way. A failure on one
+        # window is logged and skipped: letting it propagate kills the feed
+        # task, and the call then looks like a clip that simply ended early.
         for window in emitted:
-            passed = self.vad.is_speech(window)
-            stats = dict(getattr(self.vad, "last_stats", {}))
+            try:
+                self._accept_window(window)
+            except Exception as exc:
+                self.window_errors += 1
+                self.last_window_error = f"{type(exc).__name__}: {exc}"
+                logger.error(f"[{self.call_id}] window rejected by an error: "
+                             f"{exc}", exc_info=True)
 
-            self.window_log.append({
-                "t": datetime.now().timestamp(),
-                "rms": stats.get("rms", 0.0),
-                "peak": stats.get("peak", 0.0),
-                "speech_ratio": stats.get("speech_ratio", 0.0),
-                "vad_passed": bool(passed),
-                "window_idx": self.window_count if passed else None,
-            })
-            if len(self.window_log) > self.max_window_log:
-                del self.window_log[:-self.max_window_log]
+    def _accept_window(self, window):
+        """VAD-gate one emitted window and queue it if it carries speech."""
+        passed = self.vad.is_speech(window)
+        stats = dict(getattr(self.vad, "last_stats", {}))
 
-            if passed:
-                self.pending_windows.append(window)
-                self._trim_pending()
-                logger.debug(f"[{self.call_id}] Window {self.window_count} passed VAD")
-                self.window_count += 1
-            else:
-                logger.debug(f"[{self.call_id}] Window rejected by VAD (silence)")
+        self.window_log.append({
+            "t": datetime.now().timestamp(),
+            "rms": stats.get("rms", 0.0),
+            "peak": stats.get("peak", 0.0),
+            "speech_ratio": stats.get("speech_ratio", 0.0),
+            "vad_passed": bool(passed),
+            "window_idx": self.window_count if passed else None,
+        })
+        if len(self.window_log) > self.max_window_log:
+            del self.window_log[:-self.max_window_log]
+
+        if passed:
+            self.pending_windows.append(window)
+            self._trim_pending()
+            logger.debug(f"[{self.call_id}] Window {self.window_count} passed VAD")
+            self.window_count += 1
+        else:
+            logger.debug(f"[{self.call_id}] Window rejected by VAD (silence)")
 
     def window_time(self, window_idx: int) -> Optional[float]:
         """Seconds into the call at which this window's audio was captured.
@@ -269,6 +284,14 @@ class Session:
 
     def _trim_pending(self):
         """Bound the scoring backlog, oldest first. See max_pending_windows."""
+        if self.max_pending_windows is None:
+            # Uploads deliberately have no cap: every window gets scored.
+            # Subtracting from None raised TypeError out of push_audio on the
+            # FIRST window of every upload, before window_count was
+            # incremented. The feed task died there, so one window reached
+            # the scorer, it was filed under index -1, and a 62-window clip
+            # returned a single score and a confident GREEN band.
+            return
         overflow = len(self.pending_windows) - self.max_pending_windows
         if overflow > 0:
             del self.pending_windows[:overflow]
@@ -388,6 +411,9 @@ class Session:
                 (self.metadata.ended_at or datetime.now()) - self.metadata.started_at
             ).total_seconds(),
             "ringbuffer": rb,
+            "feed_error": self.feed_error,
+            "window_errors": int(self.window_errors),
+            "last_window_error": self.last_window_error,
             "vad": vd,
             "backlog": {
                 "pending": len(self.pending_windows),

@@ -690,6 +690,10 @@ def run_upload_stream(uploaded_file, model_key, model_label):
             f"{v.get('windows_passed', 0)} of {v.get('windows_seen', 0)} passed "
             f"the silence gate."
         )
+        if diag.get("feed_error"):
+            detail += f" Audio feed failed: {diag['feed_error']}"
+        if diag.get("last_window_error"):
+            detail += f" Window error: {diag['last_window_error']}"
         if engine.get("last_error"):
             detail += f" Engine last error: {engine['last_error']}"
         status.error(
