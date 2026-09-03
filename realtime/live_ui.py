@@ -41,7 +41,23 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-st.markdown("""<style>.metric-box { padding: 1.5rem; border-radius: 0.5rem; background: #f0f2f6; }
+st.markdown("""<style>
+/* Prevent Streamlit from dimming elements or changing opacity during runs/reruns */
+div[data-testid="stAppViewContainer"] [data-testid="stVerticalBlock"],
+div[data-testid="stAppViewContainer"] [data-testid="stHorizontalBlock"],
+div[data-testid="stMainBlockContainer"],
+.element-container,
+div[data-testid="stElementContainer"],
+div[data-testid="stAppViewBlockContainer"] {
+    opacity: 1 !important;
+    filter: none !important;
+    transition: none !important;
+}
+.stApp[data-test-script-state="running"] [data-testid="stMainBlockContainer"],
+.stApp[data-test-script-state="running"] .element-container {
+    opacity: 1 !important;
+}
+.metric-box { padding: 1.5rem; border-radius: 0.5rem; background: #f0f2f6; }
 .score-high { color: #ff0000; font-weight: bold; } .score-low { color: #00aa00; font-weight: bold; }
 </style>""", unsafe_allow_html=True)
 
@@ -347,7 +363,7 @@ def _series_from_scores(scores):
     return times, raw, smoothed, bands
 
 
-def render_upload_result(result, live=False, slots=None):
+def render_upload_result(result, live=False, slots=None, frame_id=0):
     """Draw one frame of an upload's timeline. Used both during streaming
     (into pre-made placeholders) and to redraw the last completed run."""
     times, raw, smoothed, bands = _series_from_scores(result["scores"])
@@ -362,9 +378,10 @@ def render_upload_result(result, live=False, slots=None):
         c3.metric("Max", f"{np.max(raw):.1%}" if raw else "—")
         c4.metric("% windows ≥ red", f"{np.mean(np.array(raw) >= RED_AT):.0%}" if raw else "—")
         if raw:
-            st.plotly_chart(upload_chart(times, raw, smoothed),
-                            use_container_width=True,
-                            key=f"chart_{result['call_id']}_static")
+            fig = upload_chart(times, raw, smoothed)
+            if fig:
+                st.plotly_chart(fig, use_container_width=True,
+                                key=f"chart_static_{result['call_id']}")
         return band
 
     slots["band"].markdown(band_card(band, result["label"], latest),
@@ -377,9 +394,13 @@ def render_upload_result(result, live=False, slots=None):
         c4.metric("% windows ≥ red",
                   f"{np.mean(np.array(raw) >= RED_AT):.0%}" if raw else "—")
     if raw:
-        slots["chart"].plotly_chart(
-            upload_chart(times, raw, smoothed), use_container_width=True,
-            key=f"chart_{result['call_id']}_{len(raw)}")
+        fig = upload_chart(times, raw, smoothed)
+        if fig:
+            with slots["chart"].container():
+                st.plotly_chart(
+                    fig, use_container_width=True,
+                    key=f"chart_{result['call_id']}_f{frame_id}"
+                )
     return band
 
 
@@ -439,6 +460,8 @@ def run_upload_stream(uploaded_file, model_key, model_label):
     stall_since = time.time()
     last_count = 0
     last_call = {}          # last telemetry we actually received
+    frame_idx = 0
+    last_rendered_n = -1
 
     while time.time() < deadline:
         call = get_call_telemetry(call_id)
@@ -450,7 +473,11 @@ def run_upload_stream(uploaded_file, model_key, model_label):
         result["scores"] = call.get("scores", {}) or {}
         n = len(result["scores"])
         progress.progress(min(1.0, n / expected))
-        render_upload_result(result, live=True, slots=slots)
+        
+        if n != last_rendered_n:
+            frame_idx += 1
+            render_upload_result(result, live=True, slots=slots, frame_id=frame_idx)
+            last_rendered_n = n
 
         if n > last_count:
             last_count = n
@@ -513,7 +540,7 @@ def run_upload_stream(uploaded_file, model_key, model_label):
             )
         return
 
-    band = render_upload_result(result, live=True, slots=slots)
+    band = render_upload_result(result, live=True, slots=slots, frame_id=frame_idx + 1)
     status.success(
         f"Done — {n} windows scored by the {model_label} model. Final band: {band}."
     )
@@ -532,110 +559,115 @@ def run_upload_stream(uploaded_file, model_key, model_label):
 
 tab1, tab2, tab3, tab4 = st.tabs(["📞 Live Calls", "📤 Upload File", "📋 History", "ℹ️ Status"])
 
-# TAB 1: LIVE CALLS
-with tab1:
+# TAB 1: LIVE CALLS (Fragment-based auto-refresh prevents whole page dimming & blocking)
+@st.fragment(run_every=f"{refresh_interval}s" if auto_refresh else None)
+def render_live_calls_tab():
     telemetry = get_telemetry()
 
     if telemetry is None:
         st.error("Cannot reach the detection server.")
-        st.code("python -m realtime.server --mock --ws-port 8000", language="bash")
-    else:
-        scoring_available = telemetry.get("scoring_available", False)
-        calls = telemetry.get("calls", {})
-        engine = telemetry.get("engine_stats", {})
+        st.code("python -m realtime.server --ws-port 8000 --mode webrtc", language="bash")
+        return
 
-        c1, c2, c3, c4 = st.columns(4)
-        c1.metric("Server", "Connected")
-        c2.metric("Active calls", f"{telemetry.get('active_calls', 0)} / {telemetry.get('max_calls', 0)}")
-        c3.metric("Windows scored", engine.get("total_windows_scored", 0))
-        c4.metric("Scoring", "Live model" if scoring_available else "Not available")
+    scoring_available = telemetry.get("scoring_available", False)
+    calls = telemetry.get("calls", {})
+    engine = telemetry.get("engine_stats", {})
 
-        if not scoring_available:
-            st.warning(
-                "**Risk scoring is switched off — no trained head is loaded.** "
-                "The capture, buffering and silence-gate path below is live and real. "
-                "The Green/Amber/Red band stays hidden until `head.pt` is available "
-                "and passed with `--ckpt`, so no mock number is ever shown as a verdict."
-            )
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Server", "Connected")
+    c2.metric("Active calls", f"{telemetry.get('active_calls', 0)} / {telemetry.get('max_calls', 0)}")
+    c3.metric("Windows scored", engine.get("total_windows_scored", 0))
+    c4.metric("Scoring", "Live model" if scoring_available else "Not available")
 
-        st.link_button("🎤  Open microphone capture", f"{server_url}/mic")
-        st.caption("Opens in a new tab — Chrome or Edge, on this machine. "
-                   "Press Start capture there, then approve the pairing code below.")
-        st.divider()
+    if not scoring_available:
+        st.warning(
+            "**Risk scoring is switched off — no trained head is loaded.** "
+            "The capture, buffering and silence-gate path below is live and real. "
+            "The Green/Amber/Red band stays hidden until trained checkpoints in `outputs/models/` "
+            "are loaded by the server without `--mock`."
+        )
 
-        if not calls:
-            st.info("No active calls. Start one from the microphone capture page.")
-        for call_id, call in calls.items():
-            state = call.get("state", "unknown")
-            windows = call.get("windows", [])
-            scores = call.get("scores", {})
-            vad = call.get("vad", {})
-            rb = call.get("ringbuffer", {})
-            t0 = windows[0]["t"] if windows else 0
+    st.link_button("🎤  Open microphone capture", f"{server_url}/mic")
+    st.caption("Opens in a new tab — Chrome or Edge, on this machine. "
+               "Press Start capture there, then approve the pairing code below.")
+    st.divider()
 
-            score_vals = [float(v["score"]) for v in scores.values()]
-            latest = score_vals[-1] if score_vals else None
-            band, band_colour = band_for(latest if scoring_available else None)
+    if not calls:
+        st.info("No active calls. Start one from the microphone capture page.")
+    for call_id, call in calls.items():
+        state = call.get("state", "unknown")
+        windows = call.get("windows", [])
+        scores = call.get("scores", {})
+        vad = call.get("vad", {})
+        rb = call.get("ringbuffer", {})
+        t0 = windows[0]["t"] if windows else 0
 
-            with st.expander(f"{call.get('caller', 'unknown')} — {call_id} ({state.upper()})", expanded=True):
+        score_vals = [float(v["score"]) for v in scores.values()]
+        latest = score_vals[-1] if score_vals else None
+        band, band_colour = band_for(latest if scoring_available else None)
 
-                if state == "consent_pending":
-                    st.markdown("**Awaiting consent.** Audio is being buffered but not scored.")
-                    p1, p2 = st.columns([2, 1])
-                    p1.markdown(
-                        f"Pairing code &nbsp; <code style='font-size:1.6rem;letter-spacing:.12em'>"
-                        f"{call.get('pairing_code', '------')}</code> &nbsp; "
-                        f"expires in {call.get('pairing_expires_in', 0)}s",
-                        unsafe_allow_html=True,
-                    )
-                    if p2.button("Approve", key=f"ok_{call_id}", type="primary"):
-                        if post_json("/api/approve", {"call_id": call_id}):
-                            st.rerun()
-                    st.divider()
+        with st.expander(f"{call.get('caller', 'unknown')} — {call_id} ({state.upper()})", expanded=True):
 
-                m1, m2, m3, m4 = st.columns(4)
-                m1.metric("Duration", f"{call.get('duration', 0):.0f}s")
-                m2.metric("Windows emitted", rb.get("windows_emitted", 0))
-                m3.metric("Passed silence gate", f"{vad.get('windows_passed', 0)} / {vad.get('windows_seen', 0)}")
-                if scoring_available and latest is not None:
-                    m4.markdown(
-                        f"<div style='font-size:.8rem;color:{MUTED}'>RISK BAND</div>"
-                        f"<div style='font-size:1.6rem;font-weight:700;color:{band_colour}'>"
-                        f"{band} · {latest:.0%}</div>",
-                        unsafe_allow_html=True,
-                    )
-                else:
-                    m4.metric("Risk band", "—")
-
-                if scoring_available:
-                    st.markdown("**Risk timeline**")
-                    fig = risk_chart(windows, scores, t0)
-                    if fig:
-                        st.plotly_chart(fig, use_container_width=True, key=f"risk_{call_id}")
-                        st.caption(
-                            f"Thresholds: Amber ≥ {AMBER_AT:.0%}, Red ≥ {RED_AT:.0%}. "
-                            "Provisional — set on the clean benchmark, not yet recalibrated "
-                            "on real recordings."
-                        )
-                    else:
-                        st.info("No scored windows yet.")
-
-                st.markdown("**Audio path**")
-                fig2 = audio_path_chart(windows, t0)
-                if fig2:
-                    st.plotly_chart(fig2, use_container_width=True, key=f"audio_{call_id}")
-                    st.caption(
-                        f"{rb.get('windows_emitted', 0)} windows of 4.0s at a 0.5s hop from "
-                        f"{rb.get('seconds_buffered', 0):.1f}s of audio. "
-                        f"{vad.get('windows_rejected', 0)} dropped as silence "
-                        f"({vad.get('pass_rate', 0):.0%} pass rate)."
-                    )
-                else:
-                    st.info("Waiting for the first 4-second window to fill.")
-
-                if st.button("End call", key=f"end_{call_id}"):
-                    if post_json("/api/end-call", {"call_id": call_id}):
+            if state == "consent_pending":
+                st.markdown("**Awaiting consent.** Audio is being buffered but not scored.")
+                p1, p2 = st.columns([2, 1])
+                p1.markdown(
+                    f"Pairing code &nbsp; <code style='font-size:1.6rem;letter-spacing:.12em'>"
+                    f"{call.get('pairing_code', '------')}</code> &nbsp; "
+                    f"expires in {call.get('pairing_expires_in', 0)}s",
+                    unsafe_allow_html=True,
+                )
+                if p2.button("Approve", key=f"ok_{call_id}", type="primary"):
+                    if post_json("/api/approve", {"call_id": call_id}):
                         st.rerun()
+                st.divider()
+
+            m1, m2, m3, m4 = st.columns(4)
+            m1.metric("Duration", f"{call.get('duration', 0):.0f}s")
+            m2.metric("Windows emitted", rb.get("windows_emitted", 0))
+            m3.metric("Passed silence gate", f"{vad.get('windows_passed', 0)} / {vad.get('windows_seen', 0)}")
+            if scoring_available and latest is not None:
+                m4.markdown(
+                    f"<div style='font-size:.8rem;color:{MUTED}'>RISK BAND</div>"
+                    f"<div style='font-size:1.6rem;font-weight:700;color:{band_colour}'>"
+                    f"{band} · {latest:.0%}</div>",
+                    unsafe_allow_html=True,
+                )
+            else:
+                m4.metric("Risk band", "—")
+
+            if scoring_available:
+                st.markdown("**Risk timeline**")
+                fig = risk_chart(windows, scores, t0)
+                if fig:
+                    st.plotly_chart(fig, use_container_width=True, key=f"risk_{call_id}")
+                    st.caption(
+                        f"Thresholds: Amber ≥ {AMBER_AT:.0%}, Red ≥ {RED_AT:.0%}. "
+                        "Provisional — set on the clean benchmark, not yet recalibrated "
+                        "on real recordings."
+                    )
+                else:
+                    st.info("No scored windows yet.")
+
+            st.markdown("**Audio path**")
+            fig2 = audio_path_chart(windows, t0)
+            if fig2:
+                st.plotly_chart(fig2, use_container_width=True, key=f"audio_{call_id}")
+                st.caption(
+                    f"{rb.get('windows_emitted', 0)} windows of 4.0s at a 0.5s hop from "
+                    f"{rb.get('seconds_buffered', 0):.1f}s of audio. "
+                    f"{vad.get('windows_rejected', 0)} dropped as silence "
+                    f"({vad.get('pass_rate', 0):.0%} pass rate)."
+                )
+            else:
+                st.info("Waiting for the first 4-second window to fill.")
+
+            if st.button("End call", key=f"end_{call_id}"):
+                if post_json("/api/end-call", {"call_id": call_id}):
+                    st.rerun()
+
+with tab1:
+    render_live_calls_tab()
 
 with tab2:
     st.header("📤 Upload a recording — scored live, window by window")
@@ -696,7 +728,8 @@ with tab3:
     st.caption("* = no consent given, scores withheld")
 
 # TAB 4: STATUS
-with tab4:
+@st.fragment(run_every=f"{refresh_interval}s" if auto_refresh else None)
+def render_status_tab():
     st.header("ℹ️ System Status")
     status = get_server_status()
 
@@ -717,11 +750,7 @@ with tab4:
         st.code(f"WebSocket URL: {ws_url}\nHTTP URL: {server_url}")
     else:
         st.error("❌ Cannot connect to server")
-        st.code("python -m realtime.server --mock --ws-port 8000")
+        st.code("python -m realtime.server --ws-port 8000 --mode webrtc")
 
-# Auto-refresh drives the live-call tab. It must never fire while an upload is
-# streaming (it would restart the script mid-run) or immediately after one
-# finishes (it would wipe the result off the screen before it could be read).
-if auto_refresh and not streamed_now:
-    time.sleep(refresh_interval)
-    st.rerun()
+with tab4:
+    render_status_tab()

@@ -52,7 +52,9 @@ $("toggle").addEventListener("click", async () => {
   } else {
     const serverUrl = $("server").value.trim();
     await chrome.storage.local.set({ [SERVER_KEY]: serverUrl });
-    const r = await chrome.runtime.sendMessage({ type: "popup:start", serverUrl });
+    const r = await chrome.runtime.sendMessage({
+      type: "popup:start", serverUrl, model: $("model").value || undefined,
+    });
     if (r && !r.ok) {
       $("err").hidden = false;
       $("err").textContent = r.error;
@@ -61,8 +63,34 @@ $("toggle").addEventListener("click", async () => {
   refresh();
 });
 
+async function loadModels() {
+  try {
+    const info = await (await fetch(`${$("server").value.trim()}/api/models`)).json();
+    const ready = (info.models || []).filter((m) => m.exists);
+    const sel = $("model");
+    sel.textContent = "";
+    if (info.mock || !ready.length) {
+      const opt = document.createElement("option");
+      opt.value = ""; opt.textContent = "Mock";
+      sel.appendChild(opt);
+      return;
+    }
+    // DOM nodes with textContent, not innerHTML - a model label comes from a
+    // checkpoint's own config and must never be interpreted as markup.
+    for (const m of ready) {
+      const opt = document.createElement("option");
+      opt.value = m.key; opt.textContent = m.label;
+      if (m.key === info.default) opt.selected = true;
+      sel.appendChild(opt);
+    }
+  } catch (e) {
+    // Server unreachable yet - the default "Default" option stays put.
+  }
+}
+
 chrome.storage.local.get(SERVER_KEY).then((v) => {
   if (v[SERVER_KEY]) $("server").value = v[SERVER_KEY];
+  loadModels();
 });
 
 refresh();

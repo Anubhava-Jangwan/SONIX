@@ -254,10 +254,11 @@ class ScoringEngine:
 
     def _head_forward(self, head, embeddings: np.ndarray) -> np.ndarray:
         """Synchronous head inference. Called via to_thread, never inline."""
+        dev = next(head.parameters()).device if hasattr(head, "parameters") else (self.device or "cpu")
         with torch.no_grad():
-            xb = torch.from_numpy(np.ascontiguousarray(embeddings)).float().to(self.device)
+            xb = torch.from_numpy(np.ascontiguousarray(embeddings)).float().to(dev)
             logits = head(xb)
-            if logits.shape[-1] == 2:
+            if hasattr(logits, "shape") and logits.shape[-1] == 2:
                 out = torch.softmax(logits, dim=-1)[:, 1]
             else:
                 out = torch.sigmoid(logits).squeeze(-1)
@@ -322,7 +323,15 @@ class ScoringEngine:
                     for i, call_id in enumerate(call_ids):
                         entry = broadcast_data.setdefault(
                             call_id, {"batch": [], "model": model_keys[i]})
-                        item = {"window_idx": window_indices[i], "score": float(scores[i])}
+                        session = self.sessions.get(call_id)
+                        item = {
+                            "window_idx": window_indices[i],
+                            "score": float(scores[i]),
+                            # Audio clock, not arrival clock - see
+                            # Session.window_time. Without it a live chart drifts
+                            # right by however far scoring is behind.
+                            "t": session.window_time(window_indices[i]) if session else None,
+                        }
                         entry["batch"].append(item)
                         entry["window_idx"] = item["window_idx"]
                         entry["score"] = item["score"]

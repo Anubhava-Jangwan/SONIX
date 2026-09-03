@@ -47,7 +47,7 @@ class SonicServer:
         self,
         port: int = 5000,
         ws_port: int = 8000,
-        mock: bool = True,
+        mock: bool = False,
         checkpoint: Optional[str] = None,
         mode: str = "voip",
         max_calls: int = 4,
@@ -58,7 +58,6 @@ class SonicServer:
         self.port = port
         self.ws_port = ws_port
         self.mock = mock
-        self.checkpoint = checkpoint
         self.mode = mode
         self.max_calls = max_calls
         self.max_batch_size = max_batch_size
@@ -66,6 +65,15 @@ class SonicServer:
         self.output_dir = output_dir
 
         Path(self.output_dir).mkdir(parents=True, exist_ok=True)
+
+        if not mock and checkpoint is None:
+            catalogue = model_registry.catalogue()
+            present = [m for m in catalogue if m["exists"]]
+            if present:
+                default = next((m for m in present if m["key"] == model_registry.DEFAULT_KEY),
+                               present[0])
+                checkpoint = default["resolved_path"]
+        self.checkpoint = checkpoint
 
         # A missing or unloadable checkpoint must not stop the server: capture,
         # consent and the audit trail are still worth demonstrating. We fall back
@@ -272,9 +280,21 @@ class SonicServer:
         pairing_code = self.pairing_manager.generate()
         sample_rate = int(data.get("sample_rate") or TARGET_SR)
 
+        # Same "model" field the upload path uses, so a person can pick a head
+        # for a live mic call too, not just for a recorded upload.
+        requested = (data.get('model') or '').strip() or None
+        if requested and not self.mock:
+            try:
+                await asyncio.to_thread(self.engine.ensure_model, requested)
+            except Exception as exc:
+                logger.warning(f"model '{requested}' unavailable ({exc}); using default")
+                requested = None
+        model_key = requested or (self.engine.default_key if not self.mock else None)
+
         source = MicSource(caller=data.get("caller", "browser-mic"), sample_rate=sample_rate)
         session = Session(call_id, source, pairing_code=pairing_code,
-                          vad_energy=getattr(self, 'vad_energy', None))
+                          vad_energy=getattr(self, 'vad_energy', None),
+                          model_key=model_key)
 
         # CONNECTING -> CONSENT_PENDING. Without this, on_pairing_approved() is a
         # no-op and push_audio() silently drops every chunk.
@@ -283,8 +303,10 @@ class SonicServer:
         # The engine only scores sessions in LISTENING/SCORING. Until pairing is
         # approved nothing is scored and the dashboard looks silently broken --
         # which is exactly what it did. --auto-approve skips that for demos.
-        if getattr(self, 'auto_approve', False):
+        is_auto = bool(getattr(self, 'auto_approve', False))
+        if is_auto:
             await session.on_pairing_approved()
+            pairing_code = None
             logger.info(f"[{call_id}] auto-approved (--auto-approve): scoring now")
 
         await self.engine.add_session(session)
@@ -298,13 +320,20 @@ class SonicServer:
             "pairing_code": pairing_code,
             "sample_rate": sample_rate,
         }))
-        await self._broadcast({
-            "type": "pairing_request",
-            "call_id": call_id,
-            "pairing_code": pairing_code,
-            "expires_in": 120,
-            "caller": source.caller,
-        })
+        if is_auto:
+            await ws.send_str(json.dumps({
+                "type": "call_state",
+                "call_id": call_id,
+                "state": "listening"
+            }))
+        else:
+            await self._broadcast({
+                "type": "pairing_request",
+                "call_id": call_id,
+                "pairing_code": pairing_code,
+                "expires_in": 120,
+                "caller": source.caller,
+            })
         logger.info(f"Mic call {call_id} started @ {sample_rate} Hz, code {pairing_code}")
 
     async def http_approve_handler(self, request):
@@ -564,12 +593,13 @@ class SonicServer:
         """Return server status."""
         return web.json_response({
             "status": "ok",
-            "mode": self.mode,
-            # The /mic page reads scoring_available from HERE, so it has to be
-            # reported here too (previously only /api/telemetry carried it, which
-            # left the capture page permanently showing "Scoring unavailable").
+            # The /mic page gates its whole verdict + chart on these two, and
+            # they were only ever served on /api/telemetry - so capture worked
+            # and the live chart stayed empty for good. Both endpoints answer
+            # the same question now.
             "scoring_available": self.scoring_available,
             "scoring_synthetic": self.scoring_synthetic,
+            "mode": self.mode,
             "active_calls": len(self.sessions),
             "max_calls": self.max_calls,
             "engine_stats": self.engine.get_stats(),

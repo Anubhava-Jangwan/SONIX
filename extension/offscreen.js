@@ -45,7 +45,7 @@ function floatToPCM16(f32) {
   return out;
 }
 
-async function start({ streamId, serverUrl, caller }) {
+async function start({ streamId, serverUrl, caller, model }) {
   serverBase = (serverUrl || serverBase).replace(/\/+$/, "");
   const wsUrl = serverBase.replace(/^http/, "ws") + "/ws";
 
@@ -83,6 +83,7 @@ async function start({ streamId, serverUrl, caller }) {
         type: "start_mic_call",
         sample_rate: ctx.sampleRate,
         caller: caller || "google-meet",
+        model: model || undefined,
       })
     );
     // scoring_available only appears on the telemetry endpoint
