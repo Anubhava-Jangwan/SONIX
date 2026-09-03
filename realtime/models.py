@@ -40,6 +40,13 @@ REGISTRY = {
         "0.02% vs 57% for baseline; DF21 EER 5.27% vs 9.48%. The only head "
         "safe to quote Indic numbers from.",
     ),
+    "full_indic_as5": (
+        "Full + Indic + ASVspoof5 (Navya)",
+        "outputs/models/head_full_indic_as5.pt",
+        "Navya's head: the full augmented stack plus IndicVoices plus ASVspoof 5. "
+        "NO EER HAS BEEN VERIFIED FOR THIS CHECKPOINT ON THIS MACHINE -- run "
+        "verify_head.py and bench_clips.py before quoting anything from it.",
+    ),
     "v3": (
         "SONIX v3 (multilingual)",
         "outputs/models/head_v3.pt",
@@ -50,11 +57,13 @@ REGISTRY = {
 }
 
 # The head the server loads and the dashboard opens on when nothing else is
-# named. head_full_ho is best on every axis measured so far -- DF21 EER,
-# dev EER, and genuine-Indian-speech false alarms -- with no trade-off against
-# detection. If it is missing from outputs/models/, the server falls back to
-# whichever registered head IS present, so a teammate without the file still
-# gets a working server.
+# named. v3 is the first head with Indian languages on BOTH sides of the
+# label, which is the whole point of the Indic work; head_full_ho scored
+# better on genuine Indian speech only because every Indian clip it ever saw
+# was genuine, so that number measured nothing. v3 is the default on that
+# reasoning, NOT on a verified head-to-head -- the sonix_real/ pair test
+# decides it. If the file is missing the server falls back to whichever
+# registered head IS present, so a teammate without it still gets a server.
 DEFAULT_KEY = "v3"
 
 
