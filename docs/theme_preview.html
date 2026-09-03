@@ -1,0 +1,64 @@
+<!doctype html><meta charset="utf-8"><title>SONIX theme preview</title>
+<style>
+      .stApp { background: #0b1112; }
+      .block-container {
+          max-width: 1180px;
+          padding-top: 2.2rem;
+          padding-bottom: 3rem;
+      }
+      html, body, [class*="css"] { font-family: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+      h1 { font-size: 26px !important; font-weight: 650; letter-spacing: -.01em; }
+      h2 { font-size: 17px !important; font-weight: 650; }
+      h3 { font-size: 15px !important; font-weight: 650; }
+      hr, [data-testid="stDivider"] { border-color: #263334; }
+      [data-testid="stMetric"] {
+          background: #121a1b;
+          border: 1px solid #263334;
+          border-radius: 10px;
+          padding: 10px 16px;
+      }
+      [data-testid="stMetricLabel"] {
+          font-size: 11px !important;
+          letter-spacing: .08em;
+          text-transform: uppercase;
+          color: #7e8d8d !important;
+      }
+      [data-testid="stMetricValue"] {
+          font-size: 22px !important; font-weight: 650; color: #eef4f4 !important;
+      }
+      [data-testid="stSidebar"] {
+          background: #121a1b; border-right: 1px solid #263334;
+      }
+      .stTabs [data-baseweb="tab-list"] { gap: 4px; border-bottom: 1px solid #263334; }
+      .stTabs [data-baseweb="tab"] {
+          font-size: 13.5px; font-weight: 550; color: #7e8d8d;
+      }
+      .stTabs [aria-selected="true"] { color: #eef4f4; }
+      div[data-testid="stExpander"] details {
+          background: #121a1b;
+          border: 1px solid #263334 !important;
+          border-radius: 10px;
+      }
+      .stAlert { border-radius: 7px; border: 1px solid #263334; }
+      code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; color: #b3c1c1; }
+      .sonix-caption { color: #7e8d8d; font-size: 11px; }
+    </style>
+<body style="background:#0b1112;color:#eef4f4;font-family:"IBM Plex Sans", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+ margin:0;padding:40px;">
+<div style="max-width:1180px;margin:0 auto">
+<h1 style="font-size:26px;font-weight:650;letter-spacing:-.01em;margin:0 0 4px">SONIX design tokens</h1>
+<p style="color:#7e8d8d;font-size:11px;margin:0 0 28px">
+Rendered from demo/theme.py. Same values in .streamlit/config.toml, extension/popup.css,
+realtime/miccapture.py.</p>
+<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:12px;margin-bottom:34px"><div style="border:1px solid #263334;border-radius:7px;overflow:hidden"><div style="height:52px;background:#0b1112"></div><div style="padding:8px 10px;font-size:11px;color:#7e8d8d">BG<br><span style="font-family:ui-monospace, SFMono-Regular, Menlo, monospace;color:#b3c1c1">#0b1112</span></div></div><div style="border:1px solid #263334;border-radius:7px;overflow:hidden"><div style="height:52px;background:#121a1b"></div><div style="padding:8px 10px;font-size:11px;color:#7e8d8d">SURFACE<br><span style="font-family:ui-monospace, SFMono-Regular, Menlo, monospace;color:#b3c1c1">#121a1b</span></div></div><div style="border:1px solid #263334;border-radius:7px;overflow:hidden"><div style="height:52px;background:#182223"></div><div style="padding:8px 10px;font-size:11px;color:#7e8d8d">SURFACE_RAISED<br><span style="font-family:ui-monospace, SFMono-Regular, Menlo, monospace;color:#b3c1c1">#182223</span></div></div><div style="border:1px solid #263334;border-radius:7px;overflow:hidden"><div style="height:52px;background:#263334"></div><div style="padding:8px 10px;font-size:11px;color:#7e8d8d">LINE<br><span style="font-family:ui-monospace, SFMono-Regular, Menlo, monospace;color:#b3c1c1">#263334</span></div></div><div style="border:1px solid #263334;border-radius:7px;overflow:hidden"><div style="height:52px;background:#eef4f4"></div><div style="padding:8px 10px;font-size:11px;color:#7e8d8d">INK<br><span style="font-family:ui-monospace, SFMono-Regular, Menlo, monospace;color:#b3c1c1">#eef4f4</span></div></div><div style="border:1px solid #263334;border-radius:7px;overflow:hidden"><div style="height:52px;background:#b3c1c1"></div><div style="padding:8px 10px;font-size:11px;color:#7e8d8d">INK_2<br><span style="font-family:ui-monospace, SFMono-Regular, Menlo, monospace;color:#b3c1c1">#b3c1c1</span></div></div><div style="border:1px solid #263334;border-radius:7px;overflow:hidden"><div style="height:52px;background:#7e8d8d"></div><div style="padding:8px 10px;font-size:11px;color:#7e8d8d">INK_3<br><span style="font-family:ui-monospace, SFMono-Regular, Menlo, monospace;color:#b3c1c1">#7e8d8d</span></div></div><div style="border:1px solid #263334;border-radius:7px;overflow:hidden"><div style="height:52px;background:#3fc2ce"></div><div style="padding:8px 10px;font-size:11px;color:#7e8d8d">ACCENT<br><span style="font-family:ui-monospace, SFMono-Regular, Menlo, monospace;color:#b3c1c1">#3fc2ce</span></div></div><div style="border:1px solid #263334;border-radius:7px;overflow:hidden"><div style="height:52px;background:#39c26a"></div><div style="padding:8px 10px;font-size:11px;color:#7e8d8d">GOOD<br><span style="font-family:ui-monospace, SFMono-Regular, Menlo, monospace;color:#b3c1c1">#39c26a</span></div></div><div style="border:1px solid #263334;border-radius:7px;overflow:hidden"><div style="height:52px;background:#e0a92b"></div><div style="padding:8px 10px;font-size:11px;color:#7e8d8d">WARN<br><span style="font-family:ui-monospace, SFMono-Regular, Menlo, monospace;color:#b3c1c1">#e0a92b</span></div></div><div style="border:1px solid #263334;border-radius:7px;overflow:hidden"><div style="height:52px;background:#f0685f"></div><div style="padding:8px 10px;font-size:11px;color:#7e8d8d">CRIT<br><span style="font-family:ui-monospace, SFMono-Regular, Menlo, monospace;color:#b3c1c1">#f0685f</span></div></div></div>
+<h2 style="font-size:17px;font-weight:650;margin:0 0 12px">Risk card</h2>
+<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:14px;margin-bottom:32px">
+<div style="border:1px solid #263334;border-left:3px solid #39c26a;border-radius:7px;padding:16px 20px;background:#121a1b;"><div style="font-size:11px;font-weight:600;letter-spacing:.1em;text-transform:uppercase;color:#7e8d8d;margin-bottom:4px;">Robust model</div><div style="font-size:40px;font-weight:700;line-height:1.15;white-space:nowrap;color:#39c26a;">GREEN - LOW</div><div style="font-size:13.5px;color:#b3c1c1;margin-top:5px;line-height:1.4;">Proceed normally</div></div>
+<div style="border:1px solid #263334;border-left:3px solid #e0a92b;border-radius:7px;padding:16px 20px;background:#121a1b;"><div style="font-size:11px;font-weight:600;letter-spacing:.1em;text-transform:uppercase;color:#7e8d8d;margin-bottom:4px;">Robust model</div><div style="font-size:40px;font-weight:700;line-height:1.15;white-space:nowrap;color:#e0a92b;">AMBER - ELEVATED</div><div style="font-size:13.5px;color:#b3c1c1;margin-top:5px;line-height:1.4;">Call back on a number you already have</div></div>
+<div style="border:1px solid #263334;border-left:3px solid #f0685f;border-radius:7px;padding:16px 20px;background:#121a1b;"><div style="font-size:11px;font-weight:600;letter-spacing:.1em;text-transform:uppercase;color:#7e8d8d;margin-bottom:4px;">Robust model</div><div style="font-size:40px;font-weight:700;line-height:1.15;white-space:nowrap;color:#f0685f;">RED - HIGH</div><div style="font-size:13.5px;color:#b3c1c1;margin-top:5px;line-height:1.4;">Second-level approval required</div></div>
+</div>
+<h2 style="font-size:17px;font-weight:650;margin:0 0 12px">Readout strip</h2>
+<div style="margin-bottom:32px"><div style="display:flex;flex-wrap:wrap;gap:24px;border:1px solid #263334;border-radius:7px;padding:10px 16px;background:#121a1b;"><div style="min-width:112px;"><div style="font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:#7e8d8d;">Model</div><div style="font-size:13.5px;color:#eef4f4;font-variant-numeric:tabular-nums;margin-top:2px;">Robust</div></div><div style="min-width:112px;"><div style="font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:#7e8d8d;">Scores received</div><div style="font-size:13.5px;color:#eef4f4;font-variant-numeric:tabular-nums;margin-top:2px;">90 / 90</div></div><div style="min-width:112px;"><div style="font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:#7e8d8d;">Analysis time</div><div style="font-size:13.5px;color:#eef4f4;font-variant-numeric:tabular-nums;margin-top:2px;">44.5 s</div></div><div style="min-width:112px;"><div style="font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:#7e8d8d;">Latest score</div><div style="font-size:13.5px;color:#eef4f4;font-variant-numeric:tabular-nums;margin-top:2px;">0.839</div></div><div style="min-width:112px;"><div style="font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:#7e8d8d;">Current band</div><div style="font-size:13.5px;color:#eef4f4;font-variant-numeric:tabular-nums;margin-top:2px;">RED</div></div></div></div>
+<h2 style="font-size:17px;font-weight:650;margin:0 0 12px">Timeline</h2>
+<img src="theme_preview_timeline.png" style="max-width:100%;border:1px solid #263334;border-radius:10px">
+</div></body>

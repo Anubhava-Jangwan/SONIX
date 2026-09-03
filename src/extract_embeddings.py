@@ -154,28 +154,43 @@ def _build_manifest_itw(itw_root):
 # Audio loading  ->  exactly 64,000 samples, 16 kHz, mono, float32
 # ===========================================================================
 def load_audio_fixed(path: str) -> np.ndarray:
-    import subprocess
+    """Decode to exactly TARGET_LEN samples, 16 kHz mono float32.
 
-    cmd = [
-        "ffmpeg",
-        "-v", "error",
-        "-i", str(path),
-        "-f", "f32le",
-        "-acodec", "pcm_f32le",
-        "-ac", "1",
-        "-ar", str(TARGET_SR),
-        "-"
-    ]
+    Tries ffmpeg first (tolerant of odd containers/codecs -- needed for some
+    DF21 and In-the-Wild files), then falls back to soundfile. Previously a
+    missing ffmpeg made EVERY file fail and be skipped, which looked like
+    "31779 bad files" rather than "ffmpeg is not installed".
+    """
+    wav = None
 
-    raw = subprocess.check_output(cmd)
-    wav = np.frombuffer(raw, dtype=np.float32)
+    try:
+        import subprocess
+        raw = subprocess.run(
+            ["ffmpeg", "-v", "error", "-i", str(path), "-f", "f32le",
+             "-acodec", "pcm_f32le", "-ac", "1", "-ar", str(TARGET_SR), "-"],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True).stdout
+        wav = np.frombuffer(raw, dtype=np.float32)
+        if wav.size == 0:
+            wav = None
+    except (OSError, FileNotFoundError, subprocess.SubprocessError):
+        wav = None                      # ffmpeg missing or failed on this file
+
+    if wav is None:                     # fallback: soundfile + our resampler
+        import soundfile as sf
+        w, sr = sf.read(path, dtype="float32", always_2d=False)
+        if w.ndim > 1:
+            w = w.mean(axis=1)
+        if sr != TARGET_SR:
+            w = _resample(w, sr, TARGET_SR)
+        wav = w
 
     if len(wav) >= TARGET_LEN:
         wav = wav[:TARGET_LEN]
     else:
         wav = np.pad(wav, (0, TARGET_LEN - len(wav)))
-
     return np.ascontiguousarray(wav, dtype=np.float32)
+
+
 def _resample(wav, sr_in, sr_out):
     # ASVspoof and In-the-Wild are already 16 kHz, so this rarely runs. Use
     # torchaudio's high-quality resampler when available; fall back to linear.

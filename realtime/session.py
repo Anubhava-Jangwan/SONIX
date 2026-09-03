@@ -73,7 +73,9 @@ class Session:
         call_id: str,
         source,  # SourceAdapter (AudioSocket, WebRTC, file)
         pairing_code: str,
-        pairing_expiry_sec: int = 120
+        pairing_expiry_sec: int = 120,
+        vad_energy: float = None,
+        model_key: str = None,
     ):
         """
         Args:
@@ -81,10 +83,18 @@ class Session:
             source: SourceAdapter instance (has .caller, .read())
             pairing_code: 6-digit approval code
             pairing_expiry_sec: Seconds until pairing code expires
+            model_key: which trained head the engine should score this call
+                with ("baseline"/"augmented"/"robust"). None = server default.
         """
         self.call_id = call_id
         self.source = source
         self.state = CallState.CONNECTING
+        self.model_key = model_key
+
+        # Set by the upload path so the dashboard can draw a real progress bar
+        # instead of guessing when a file has finished streaming.
+        self.expected_windows = None
+        self.feed_done = False
 
         now = datetime.now()
         self.metadata = CallMetadata(
@@ -100,13 +110,37 @@ class Session:
         from realtime.vad import VAD
 
         self.ringbuffer = RingBuffer()       # [capacity=64000 samples @ 16kHz = 4s]
-        self.vad = VAD()                     # [energy + zero-crossing threshold]
+        # Browser mic audio is often far quieter than the studio speech the
+        # default floor assumes, so the gate is tunable from the server.
+        # vad_energy == 0 means "score everything": the energy floor alone is
+        # not enough to disable the gate, because the zero-crossing ceiling and
+        # the 20%-of-frames rule can still reject a whole window (fricative-
+        # heavy or very short speech). Open all three.
+        if vad_energy is not None and float(vad_energy) <= 0.0:
+            self.vad = VAD(threshold_energy=0.0, zcr_ceiling=1.0,
+                           min_speech_ratio=0.0)
+        elif vad_energy is not None:
+            self.vad = VAD(threshold_energy=vad_energy)
+        else:
+            self.vad = VAD()
 
         # Windows that passed VAD (ready for scoring)
         self.pending_windows: List[np.ndarray] = []
 
-        # Results: {window_idx: {"timestamp": float, "score": float}}
+        # Scoring can fall behind real time (cold model, contended GPU, several
+        # calls at once). For live mic calls, bounding backlog prevents drift.
+        # For uploaded recordings, we MUST score all windows without dropping.
+        is_upload = (
+            getattr(source, 'is_file', False)
+            or hasattr(source, 'file_path')
+            or str(call_id).startswith('upload_')
+        )
+        self.max_pending_windows = None if is_upload else 32
+        self.windows_dropped_backlog = 0
+
+        # Primary-model results: {window_idx: {"timestamp": float, "score": float}}
         self.scores: Dict[int, Dict] = {}
+        self.scores_by_model: Dict[str, Dict[int, Dict]] = {}
 
         # For ordering
         self.window_count = 0
@@ -213,10 +247,36 @@ class Session:
 
             if passed:
                 self.pending_windows.append(window)
+                self._trim_pending()
                 logger.debug(f"[{self.call_id}] Window {self.window_count} passed VAD")
                 self.window_count += 1
             else:
                 logger.debug(f"[{self.call_id}] Window rejected by VAD (silence)")
+
+    def window_time(self, window_idx: int) -> Optional[float]:
+        """Seconds into the call at which this window's audio was captured.
+
+        Scoring lags capture by a batch interval plus a forward pass, so a chart
+        plotted at score-arrival time slides right and bunches up whenever the
+        scorer stalls. This is the audio clock, taken from the window log, and it
+        is what every timeline plots against.
+        """
+        t0 = self.metadata.started_at.timestamp()
+        for entry in reversed(self.window_log):
+            if entry.get("window_idx") == window_idx:
+                return entry["t"] - t0
+        return None
+
+    def _trim_pending(self):
+        """Bound the scoring backlog, oldest first. See max_pending_windows."""
+        overflow = len(self.pending_windows) - self.max_pending_windows
+        if overflow > 0:
+            del self.pending_windows[:overflow]
+            self.windows_dropped_backlog += overflow
+            logger.warning(
+                f"[{self.call_id}] Scoring is behind real time - dropped "
+                f"{overflow} oldest window(s), {self.windows_dropped_backlog} total"
+            )
 
     async def get_pending_windows(self) -> List[np.ndarray]:
         """Return all windows pending scoring (passed VAD). Clears the list after return."""
@@ -234,19 +294,35 @@ class Session:
         """
         if windows:
             self.pending_windows[:0] = windows
+            self._trim_pending()
 
-    async def record_score(self, window_idx: int, score: float, timestamp: float = None):
+    async def record_score(
+        self,
+        window_idx: int,
+        score: float,
+        timestamp: float = None,
+        model_id: str = "primary",
+        model_label: str = "Primary",
+        primary: bool = True,
+    ):
         """Record a scored window. Transitions to SCORING state if not already there."""
         if self.state == CallState.LISTENING:
             self.state = CallState.SCORING
             self._add_audit("first_score_recorded")
 
-        self.scores[window_idx] = {
+        entry = {
             "timestamp": timestamp or datetime.now().timestamp(),
             "score": float(score)
         }
+        model_scores = self.scores_by_model.setdefault(model_id, {})
+        model_scores[window_idx] = entry
 
-        logger.debug(f"[{self.call_id}] Window {window_idx} scored: {score:.2%}")
+        if primary:
+            self.scores[window_idx] = entry
+
+        logger.debug(
+            f"[{self.call_id}] Window {window_idx} scored by {model_label}: {score:.2%}"
+        )
 
     async def end_call(self):
         """Finalize call, archive metadata."""
@@ -289,7 +365,8 @@ class Session:
             "pairing_code": self.metadata.pairing_code if self.state == CallState.CONSENT_PENDING else None,
             "pairing_expires_in": int((self.metadata.pairing_expires_at - datetime.now()).total_seconds())
                 if self.state == CallState.CONSENT_PENDING else None,
-            "scores": self.scores
+            "scores": self.scores,
+            "scores_by_model": self.scores_by_model,
         }
 
     def telemetry(self, limit: int = 240) -> dict:
@@ -300,6 +377,9 @@ class Session:
             "call_id": self.call_id,
             "caller": self.metadata.caller,
             "state": self.state.value,
+            "model": self.model_key,
+            "expected_windows": self.expected_windows,
+            "feed_done": bool(self.feed_done),
             "pairing_code": self.metadata.pairing_code,
             "pairing_expires_in": max(
                 0, int((self.metadata.pairing_expires_at - datetime.now()).total_seconds())
@@ -309,8 +389,14 @@ class Session:
             ).total_seconds(),
             "ringbuffer": rb,
             "vad": vd,
+            "backlog": {
+                "pending": len(self.pending_windows),
+                "max_pending": self.max_pending_windows,
+                "dropped": self.windows_dropped_backlog,
+            },
             "windows": self.window_log[-limit:],
             "scores": self.scores,
+            "scores_by_model": self.scores_by_model,
         }
 
     def save_audit(self, output_dir: str = "outputs/calls"):
@@ -330,7 +416,8 @@ class Session:
                 {"action": e.action, "timestamp": e.timestamp, "metadata": e.metadata}
                 for e in self.metadata.audit
             ],
-            "scores": self.scores
+            "scores": self.scores,
+            "scores_by_model": self.scores_by_model,
         }
 
         path = Path(output_dir) / f"{self.metadata.call_id}.json"

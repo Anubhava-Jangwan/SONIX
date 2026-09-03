@@ -36,3 +36,39 @@ def demo_score_stream(num_windows: int, filename: str, step_delay_s: float = 0.5
         # Mock only: real model must yield when its inference result is ready.
         time.sleep(step_delay_s)
         yield idx, score
+
+
+def replay_score_stream(
+    score_file: str,
+    step_delay_s: float = 0.50,
+) -> Iterator[tuple[int, float]]:
+    """Replay precomputed scores one window at a time.
+
+    The JSON file must contain:
+        {
+            "clip": "real_01.wav",
+            "scores": [0.02, 0.03, 0.05, ...]
+        }
+
+    Scores correspond to 4-second windows with a 0.5-second hop.
+    """
+    import json
+    import time
+
+    with open(score_file, "r", encoding="utf-8") as f:
+        payload = json.load(f)
+
+    scores = payload.get("scores")
+    if not isinstance(scores, list):
+        raise ValueError("Replay score file must contain a 'scores' list")
+
+    for idx, score in enumerate(scores):
+        score = float(score)
+
+        if not np.isfinite(score):
+            raise ValueError(f"Invalid score at index {idx}: {score}")
+
+        score = float(np.clip(score, 0.0, 1.0))
+
+        time.sleep(step_delay_s)
+        yield idx, score

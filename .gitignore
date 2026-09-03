@@ -1,7 +1,14 @@
 # data and generated outputs — never commit these
 data/
-outputs/
 *.zip
+
+# outputs/ is excluded EXCEPT the trained heads: they are ~1 MB each and having
+# them in git is what stopped us WhatsApp-ing checkpoints around. A parent-dir
+# exclude cannot be undone by a negation, so it is opened one level at a time.
+outputs/*
+!outputs/models/
+outputs/models/*
+!outputs/models/*.pt
 
 # python
 __pycache__/
@@ -27,3 +34,6 @@ missing_eval_files.txt
 
 # local test audio (not shared)
 testcall.wav
+
+# local backups made before edits
+*.bak
