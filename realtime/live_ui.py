@@ -568,6 +568,7 @@ def run_upload_stream(uploaded_file, model_key, model_label):
     stall_since = time.time()
     last_count = 0
     last_call = {}          # last telemetry we actually received
+    stop_reason = "deadline"
     frame_idx = 0
     last_rendered_n = -1
 
@@ -591,15 +592,21 @@ def run_upload_stream(uploaded_file, model_key, model_label):
             last_count = n
             stall_since = time.time()
 
+        passed = (call.get("vad", {}) or {}).get("windows_passed", 0)
         if n >= expected:
+            stop_reason = "complete"
             break
-        # Feed finished and nothing new for 15s: the silence gate dropped the
-        # rest. That is a real outcome, not a hang - say so rather than spin.
+        # Everything the gate let through has come back scored and there is
+        # no more audio: that is a finished run, not a stalled one.
+        if call.get("feed_done") and passed and n >= passed:
+            stop_reason = "complete"
+            break
+        # Feed finished and nothing new for 15s. Do NOT write the verdict
+        # here: the success line further down uses the same placeholder and
+        # would silently overwrite it, which is how a run that gave up after
+        # one window reported itself as "Done".
         if call.get("feed_done") and time.time() - stall_since > 15:
-            status.warning(
-                f"Stopped at {n} of {expected} windows — the remaining windows "
-                "were dropped by the silence gate before scoring."
-            )
+            stop_reason = "stalled"
             break
         time.sleep(0.4)
 
@@ -652,13 +659,44 @@ def run_upload_stream(uploaded_file, model_key, model_label):
     # (that's how `last_rendered_n` came to equal `n` for every loop exit path
     # above) -- rendering it again here would reuse the same Streamlit chart
     # key twice in one script run and raise StreamlitDuplicateElementKey, which
-    # left this success message never showing. Just read back the band it
-    # already drew instead of redrawing.
+    # left this success message never showing. Read back the band it already
+    # drew instead of redrawing.
     _, _, _, bands = _series_from_scores(result["scores"])
     band = bands[-1] if bands else "GREEN"
-    status.success(
-        f"Done — {n} windows scored by the {model_label} model. Final band: {band}."
-    )
+
+    # Defined locally rather than reused from the branch above: that branch may
+    # not have run, and a NameError here would swallow the verdict entirely.
+    engine = (get_server_status() or {}).get("engine_stats", {}) or {}
+    v = diag.get("vad", {}) or {}
+    rb = diag.get("ringbuffer", {}) or {}
+
+    if stop_reason == "complete":
+        dropped = max(0, int(v.get("windows_seen", 0)) - int(v.get("windows_passed", 0)))
+        note = (f" ({dropped} silent windows skipped by the gate)" if dropped else "")
+        status.success(
+            f"Done \u2014 {n} of {expected} windows scored by the {model_label} "
+            f"model{note}. Final band: {band}."
+        )
+    else:
+        # A partial run used to print the green "Done" line: the warning
+        # written inside the loop landed in this same placeholder and was
+        # overwritten by it. A band drawn from a fraction of the clip is not
+        # a verdict on the clip, and the UI has to say so.
+        why = ("the 15-minute deadline expired" if stop_reason == "deadline"
+               else "scoring stopped making progress for 15s after all the "
+                    "audio had been fed in")
+        detail = (
+            f"Ring buffer produced {rb.get('windows_emitted', 0)} windows; "
+            f"{v.get('windows_passed', 0)} of {v.get('windows_seen', 0)} passed "
+            f"the silence gate."
+        )
+        if engine.get("last_error"):
+            detail += f" Engine last error: {engine['last_error']}"
+        status.error(
+            f"INCOMPLETE \u2014 only {n} of {expected} windows scored. The band "
+            f"shown ({band}) covers that fraction only. Stopped because "
+            f"{why}. {detail}"
+        )
     st.caption(
         f"Thresholds: amber ≥ {AMBER_AT:.0%}, red ≥ {RED_AT:.0%}. Band uses a "
         "5-window moving average with hysteresis (3 of 5 must agree), so a "
