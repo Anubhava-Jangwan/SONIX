@@ -4,15 +4,15 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>SONIX — live voice-clone detection</title>
-<meta name="description" content="SONIX listens to a live call and scores how likely the voice is AI-generated, live. Chrome extension, browser mic, or file upload — three real entry points into one detection pipeline.">
+<meta name="description" content="SONIX listens to a live call and scores how likely the voice is AI-generated, live, right on this page — plus a Chrome extension and file upload into the same detection pipeline.">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;650;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="styles.css">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;650;700&family=IBM+Plex+Mono:wght@400;500&family=Outfit:wght@500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="styles.css?v=20260906">
 </head>
 <body>
 
-<a class="skip-link" href="#main" style="position:absolute;left:-9999px;top:0;background:var(--ink);color:var(--bg);padding:10px 16px;border-radius:0 0 8px 0;z-index:200;">Skip to content</a>
+<a class="skip-link" href="#main">Skip to content</a>
 
 <header class="nav" id="nav">
   <div class="wrap">
@@ -28,9 +28,10 @@
     </button>
 
     <ul class="navlinks" id="navlinks">
-      <li><a href="#home">Home</a></li>
-      <li><a href="#pipeline">Pipeline</a></li>
-      <li><a href="#about">About</a></li>
+      <li><a href="#home" data-nav="home">Home</a></li>
+      <li><a href="#results" data-nav="results">Results</a></li>
+      <li><a href="#pipeline" data-nav="pipeline">Pipeline</a></li>
+      <li><a href="#about" data-nav="about">About</a></li>
       <li class="dropdown" id="extDropdown">
         <button id="extDropdownBtn" aria-haspopup="true" aria-expanded="false" aria-controls="extMenu">
           SONIX Extension
@@ -38,11 +39,17 @@
         </button>
         <ul class="menu" id="extMenu" role="menu" aria-label="SONIX Extension">
           <li role="none"><a role="menuitem" href="#ext-install"><strong>Install in Chrome</strong><span class="desc">Load unpacked, permissions, what it captures</span></a></li>
-          <li role="none"><a role="menuitem" href="#ext-live"><strong>Live Voice Detection</strong><span class="desc">Mic capture → pairing → live band</span></a></li>
+          <li role="none"><a role="menuitem" href="#ext-live"><strong>Live Voice Detection</strong><span class="desc">Mic capture, pairing and the live band — right on this page</span></a></li>
           <li role="none"><a role="menuitem" href="#ext-upload"><strong>Upload a Recording</strong><span class="desc">Score a saved call file</span></a></li>
         </ul>
       </li>
     </ul>
+
+    <button class="theme-toggle" id="themeToggle" type="button" aria-label="Toggle color theme" title="Toggle color theme">
+      <svg class="icon-sun" width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true"><circle cx="8" cy="8" r="3.4" stroke="currentColor" stroke-width="1.4"/><path d="M8 .8v2M8 13.2v2M15.2 8h-2M2.8 8h-2M13 3l-1.4 1.4M4.4 11.6 3 13M13 13l-1.4-1.4M4.4 4.4 3 3" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>
+      <svg class="icon-moon" width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M14 9.3A6.2 6.2 0 1 1 6.7 2 5 5 0 0 0 14 9.3Z" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/></svg>
+      <svg class="icon-auto" width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true"><circle cx="8" cy="8" r="6.2" stroke="currentColor" stroke-width="1.4"/><path d="M8 1.8v12.4a6.2 6.2 0 0 0 0-12.4Z" fill="currentColor"/></svg>
+    </button>
 
     <a class="navcta" href="#ext-live">See it live</a>
   </div>
@@ -73,11 +80,132 @@
           <a class="btn btn-ghost" href="#ext-upload">Upload a call</a>
         </div>
       </div>
+
+      <div class="stat-strip" aria-label="Headline results, reproducible from src/metrics.py">
+        <div class="stat-cell">
+          <b class="count-up" data-target="1.49" data-decimals="2" data-suffix="%">0%</b>
+          <span>EER · ASVspoof19 LA eval</span>
+        </div>
+        <div class="stat-cell">
+          <b class="count-up" data-target="300" data-suffix="k">0</b>
+          <span>trained params (MLP head)</span>
+        </div>
+        <div class="stat-cell">
+          <b class="count-up" data-target="1024" data-suffix="-dim">0</b>
+          <span>frozen wav2vec2 embedding</span>
+        </div>
+        <div class="stat-cell">
+          <b>4s<span class="slash">/</span>0.5s</b>
+          <span>window · hop</span>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================================================ RESULTS -->
+  <section class="section" id="results">
+    <div class="wrap">
+      <div class="section-head">
+        <p class="eyebrow">Reproducible from <code>src/metrics.py</code></p>
+        <h2>The numbers, as measured — not estimated</h2>
+        <p>
+          Every figure below is copied from <code>docs/RESULTS_TABLE.md</code>,
+          the team's single source of truth: two independent implementations
+          agree to four decimal places, and anything not in that file doesn't
+          go on a slide either.
+        </p>
+      </div>
+
+      <div class="metric-grid">
+        <div class="metric-card">
+          <span class="eyebrow">Eval EER</span>
+          <b class="count-up" data-target="1.4937" data-decimals="4" data-suffix="%">0%</b>
+          <p>ASVspoof2019 LA eval, baseline <code>head.pt</code>, threshold 0.095130</p>
+        </div>
+        <div class="metric-card">
+          <span class="eyebrow">Eval set size</span>
+          <b class="count-up" data-target="71237" data-suffix="">0</b>
+          <p>7,355 bonafide / 63,882 spoof clips</p>
+        </div>
+        <div class="metric-card">
+          <span class="eyebrow">Dev EER</span>
+          <b class="count-up" data-target="0.1592" data-decimals="4" data-suffix="%">0%</b>
+          <p>Sanity check only — dev shares attack types with training, so a near-zero number here is expected, not a headline.</p>
+        </div>
+        <div class="metric-card">
+          <span class="eyebrow">Dev set size</span>
+          <b class="count-up" data-target="24844" data-suffix="">0</b>
+          <p>2,548 bonafide / 22,296 spoof clips</p>
+        </div>
+        <div class="metric-card">
+          <span class="eyebrow">Augmented head, dev EER</span>
+          <b class="count-up" data-target="0.24" data-decimals="2" data-suffix="%">0%</b>
+          <p><code>head_aug.pt</code>, early-stopped epoch 11 — not comparable to the baseline row above (different, codec-augmented test set).</p>
+        </div>
+        <div class="metric-card">
+          <span class="eyebrow">Calibration</span>
+          <b>T ≈ 1.05</b>
+          <p>Fitted on dev, applied to eval. EER unchanged (1.4937% before and after) — the model was already well-calibrated in-domain.</p>
+        </div>
+      </div>
+
+      <div class="padding-fix">
+        <div class="section-head" style="margin-bottom:20px;">
+          <p class="eyebrow">Measured before / after</p>
+          <h3 class="title" style="margin:0 0 6px;">The zero-padding bug, fixed</h3>
+          <p style="margin:0;">
+            Same genuine recording (<code>chetan voice.ogg</code>, 66.1 s), same
+            excerpt positions, baseline <code>head.pt</code>. Score 0–1, higher
+            means "model thinks this is fake" — so a real voice scoring near 0
+            after the fix is the correct outcome.
+          </p>
+        </div>
+        <div class="pf-rows">
+          <div class="pf-row">
+            <span class="pf-label">1 second clip</span>
+            <div class="pf-bars">
+              <div class="pf-bar before" style="--pf:87.95%"><em>0.8795</em></div>
+              <div class="pf-bar after" style="--pf:3.29%"><em>0.0329</em></div>
+            </div>
+          </div>
+          <div class="pf-row">
+            <span class="pf-label">2 second clip</span>
+            <div class="pf-bars">
+              <div class="pf-bar before" style="--pf:50.61%"><em>0.5061</em></div>
+              <div class="pf-bar after" style="--pf:0.05%"><em>0.0005</em></div>
+            </div>
+          </div>
+          <div class="pf-row">
+            <span class="pf-label">3 second clip</span>
+            <div class="pf-bars">
+              <div class="pf-bar before" style="--pf:22.24%"><em>0.2224</em></div>
+              <div class="pf-bar after" style="--pf:0.96%"><em>0.0096</em></div>
+            </div>
+          </div>
+          <div class="pf-row">
+            <span class="pf-label">full 66&nbsp;s (control)</span>
+            <div class="pf-bars">
+              <div class="pf-bar before" style="--pf:11.71%"><em>0.1171</em></div>
+              <div class="pf-bar after" style="--pf:11.71%"><em>0.1171 · no padding used</em></div>
+            </div>
+          </div>
+        </div>
+        <div class="pf-legend"><span class="sw before"></span> before (zero-padded) &nbsp; <span class="sw after"></span> after (repeat-padded)</div>
+      </div>
+
+      <div class="note-box" style="margin-top:28px;">
+        <strong>Read this as EER, never accuracy</strong> — the data is roughly
+        90% spoof, so an accuracy figure would be flattering and meaningless.
+        Cross-dataset numbers (ASVspoof2021 DF, In-the-Wild, codec robustness)
+        are still pending on this table; when they land they're expected to be
+        markedly worse than the clean eval number above — that gap is this
+        project's headline generalisation finding, not a bug to hide.
+      </div>
     </div>
   </section>
 
   <!-- ============================================================ ABOUT -->
-  <section class="section" id="about">
+  <section class="section section-alt" id="about">
     <div class="wrap">
       <div class="grid-2">
         <div>
@@ -102,6 +230,22 @@
             <span class="num">1.49%</span>
             <span class="lbl">EER on ASVspoof2019&nbsp;LA eval<br>(equal error rate, not accuracy)</span>
           </div>
+
+          <div class="gauge-demo">
+            <p class="eyebrow" style="margin-bottom:10px;">Try the thresholds</p>
+            <input type="range" id="gaugeSlider" min="0" max="100" value="12" aria-label="Illustrative risk score">
+            <div class="gauge-demo-row">
+              <div class="gauge-demo-readout">
+                <b id="gaugeSliderValue">12%</b>
+                <span id="gaugeSliderBand">Green — consistent with a real voice</span>
+              </div>
+            </div>
+            <p class="model-note" style="margin-top:10px;">
+              Illustrative only — drag to see how a raw score maps to the fixed
+              Green&nbsp;&lt;35% / Amber&nbsp;35–65% / Red&nbsp;&ge;65% bands.
+              This isn't a live score; see <a href="#ext-live">Live Voice Detection</a> for that.
+            </p>
+          </div>
         </div>
         <div>
           <p class="eyebrow">Architecture, one line</p>
@@ -121,7 +265,7 @@
   </section>
 
   <!-- ============================================================ PIPELINE -->
-  <section class="section section-alt" id="pipeline">
+  <section class="section" id="pipeline">
     <div class="wrap">
       <div class="section-head">
         <p class="eyebrow">End to end</p>
@@ -132,6 +276,11 @@
           Nothing is scored, and nothing is even buffered past the consent
           gate, without an explicit human approval.
         </p>
+      </div>
+
+      <div class="pipeline-controls">
+        <button class="btn btn-ghost btn-sm" id="walkBtn" type="button" aria-pressed="false">▶ Walk through the pipeline</button>
+        <span class="pipeline-step-label" id="walkLabel">Click a step, or press play</span>
       </div>
 
       <div class="pipeline-wrap">
@@ -146,11 +295,11 @@
           </defs>
 
           <!-- capture row -->
-          <g class="pnode" font-size="13.5">
+          <g class="pnode walk-node" id="step-capture" data-step-title="Four capture sources — mic, Meet tab, VoIP or a file — all feed the same path." font-size="13.5">
             <g transform="translate(20,20)">
               <rect width="200" height="60" rx="10"/>
               <text x="100" y="26" text-anchor="middle" font-weight="600">Mic capture</text>
-              <text x="100" y="44" text-anchor="middle" class="sub" font-size="11">/mic page, browser</text>
+              <text x="100" y="44" text-anchor="middle" class="sub" font-size="11">this page, browser</text>
             </g>
             <g transform="translate(240,20)">
               <rect width="200" height="60" rx="10"/>
@@ -177,7 +326,7 @@
             <path d="M780,80 C780,110 480,110 460,140" marker-end="url(#arrow)"/>
           </g>
 
-          <g class="pnode" font-size="13.5">
+          <g class="pnode walk-node" id="step-resample" data-step-title="Every source is resampled to one common rate before anything else happens." font-size="13.5">
             <g transform="translate(300,140)">
               <rect width="240" height="56" rx="10"/>
               <text x="120" y="24" text-anchor="middle" font-weight="600">Resample to 16&nbsp;kHz mono</text>
@@ -188,7 +337,7 @@
           <g class="pedge"><path d="M420,196 L420,224" marker-end="url(#arrow)"/></g>
 
           <!-- consent gate -->
-          <g class="pnode pgate" font-size="13.5">
+          <g class="pnode pgate walk-node" id="step-consent" data-step-title="A 6-digit code, approved by a human. Audio is discarded, not buffered, until then." font-size="13.5">
             <g transform="translate(280,224)">
               <rect width="280" height="66" rx="10"/>
               <text x="140" y="26" text-anchor="middle" class="gate-label">Consent gate</text>
@@ -204,7 +353,7 @@
 
           <g class="pedge"><path d="M420,290 L420,318" marker-end="url(#arrow)"/></g>
 
-          <g class="pnode" font-size="13.5">
+          <g class="pnode walk-node" id="step-window" data-step-title="Audio accumulates in a ring buffer until there's a full 4-second window, sliding forward 0.5s at a time." font-size="13.5">
             <g transform="translate(280,318)">
               <rect width="280" height="56" rx="10"/>
               <text x="140" y="24" text-anchor="middle" font-weight="600">4s window / 0.5s hop</text>
@@ -214,7 +363,7 @@
 
           <g class="pedge"><path d="M420,374 L420,402" marker-end="url(#arrow)"/></g>
 
-          <g class="pnode" font-size="13.5">
+          <g class="pnode walk-node" id="step-vad" data-step-title="RMS, peak and speech ratio are scored per window; anything with no speech is dropped here." font-size="13.5">
             <g transform="translate(280,402)">
               <rect width="280" height="56" rx="10"/>
               <text x="140" y="24" text-anchor="middle" font-weight="600">VAD silence gate</text>
@@ -224,7 +373,7 @@
 
           <g class="pedge"><path d="M420,458 L420,486" marker-end="url(#arrow)"/></g>
 
-          <g class="pnode" font-size="13.5">
+          <g class="pnode walk-node" id="step-embed" data-step-title="A frozen, never-fine-tuned front-end turns the window into a 1024-dim embedding." font-size="13.5">
             <g transform="translate(260,486)">
               <rect width="320" height="64" rx="10"/>
               <text x="160" y="27" text-anchor="middle" font-weight="600">Frozen wav2vec2 XLS-R (300M)</text>
@@ -234,7 +383,7 @@
 
           <g class="pedge"><path d="M420,550 L420,578" marker-end="url(#arrow)"/></g>
 
-          <g class="pnode" font-size="13.5">
+          <g class="pnode walk-node" id="step-head" data-step-title="The only trained part of the model — ~300k parameters — turns the embedding into a risk score." font-size="13.5">
             <g transform="translate(260,578)">
               <rect width="320" height="64" rx="10"/>
               <text x="160" y="27" text-anchor="middle" font-weight="600">Trained MLP head (~300k params)</text>
@@ -245,7 +394,7 @@
           <g class="pedge"><path d="M420,642 L420,668" marker-end="url(#arrow)"/></g>
 
           <!-- band row -->
-          <g class="pband" font-size="13" text-anchor="middle">
+          <g class="pband walk-node" id="step-band" data-step-title="The score is bucketed into Green, Amber or Red — provisional thresholds, not tuned on real calls yet." font-size="13" text-anchor="middle">
             <g class="pband-g" transform="translate(120,668)">
               <rect width="150" height="52" rx="9"/>
               <text x="75" y="24">Green</text>
@@ -270,7 +419,7 @@
 
           <g class="pedge"><path d="M195,720 C195,752 380,752 400,764" marker-end="url(#arrow)"/><path d="M525,720 C525,752 460,752 440,764" marker-end="url(#arrow)"/></g>
 
-          <g class="pnode" font-size="13.5">
+          <g class="pnode walk-node" id="step-audit" data-step-title="Events and scores are written to disk. The audio itself never is — it's overwritten in the ring buffer." font-size="13.5">
             <g transform="translate(220,764)">
               <rect width="420" height="66" rx="10"/>
               <text x="210" y="27" text-anchor="middle" font-weight="600">Audit record written</text>
@@ -289,12 +438,12 @@
   </section>
 
   <!-- ============================================================ EXTENSION -->
-  <section class="section" id="extension">
+  <section class="section section-alt" id="extension">
     <div class="wrap">
       <div class="section-head">
-        <p class="eyebrow">Three ways in</p>
+        <p class="eyebrow">Three ways in, one page</p>
         <h2>SONIX Extension</h2>
-        <p>The same detection engine, reached three different ways — pick whichever fits the call you're on.</p>
+        <p>The same detection engine, reached three different ways — pick whichever fits the call you're on. Live detection and file upload both run right here, no other page to open.</p>
       </div>
 
       <nav class="subnav" aria-label="Extension sections">
@@ -317,10 +466,10 @@
         </p>
 
         <ol class="steps">
-          <li>Open <code>chrome://extensions</code></li>
+          <li>Open <code class="copyable">chrome://extensions</code></li>
           <li>Turn on <strong>Developer mode</strong> (top right)</li>
           <li>Click <strong>Load unpacked</strong></li>
-          <li>Select the <code>extension/</code> folder inside this repository</li>
+          <li>Select the <code class="copyable">extension/</code> folder inside this repository</li>
         </ol>
 
         <p>The SONIX icon appears in the toolbar. Pin it — you'll want it visible during a call.</p>
@@ -363,7 +512,7 @@
       <div class="subsection" id="ext-live">
         <p class="eyebrow">02 · Browser microphone</p>
         <h3 class="title">Live Voice Detection</h3>
-        <p class="kicker">Served at <code>localhost:8000/mic</code> once the server is running</p>
+        <p class="kicker">Runs on this page — no separate window, no other route</p>
 
         <div class="status-pill" id="micStatus" data-state="checking">
           <span class="dot" aria-hidden="true"></span>
@@ -371,23 +520,64 @@
         </div>
 
         <p>
-          Opening the mic page starts a live call the same way the
-          extension does — the server owns consent, windowing and scoring;
-          the page is just a capture surface.
+          This starts a live call the same way the extension does — the
+          server owns consent, windowing and scoring; this page is just the
+          capture surface, the pairing approval and the live readout, all in
+          one place.
         </p>
 
         <ol class="steps">
-          <li>Start the server: <code>python -m realtime.server --ws-port 8000 --mode webrtc</code></li>
-          <li>Open <a href="/mic" target="_blank" rel="noopener">localhost:8000/mic</a> and press <strong>Start capture</strong></li>
-          <li>A six-digit pairing code appears — approve it in the dashboard (<code>streamlit run realtime/live_ui.py</code>)</li>
+          <li>Start the server: <code class="copyable">python -m realtime.server --ws-port 8000 --mode webrtc</code></li>
+          <li>Click <strong>Start capture</strong> below and allow microphone access</li>
+          <li>A six-digit pairing code appears — click <strong>Approve on this device</strong> right below it</li>
           <li>Once approved, a new 4-second window fills roughly twice a second and the band goes live</li>
         </ol>
 
+        <div class="capture-card">
+          <label class="model-pick" for="captureModelSelect">
+            <span>Model head</span>
+            <select id="captureModelSelect" disabled>
+              <option value="">Server default</option>
+            </select>
+          </label>
+          <p class="model-note" id="captureModelNote"></p>
+
+          <div class="capture-head">
+            <button class="btn btn-primary" id="captureBtn" type="button">Start capture</button>
+            <div class="level-row">
+              <span class="label">Input level</span>
+              <div class="level-meter"><i id="levelBar"></i></div>
+            </div>
+          </div>
+
+          <div class="pairing-box" id="pairingBox" hidden>
+            <div>
+              <p class="label">Pairing code — approve to start scoring</p>
+              <div class="pairing-code" id="pairingCode">------</div>
+            </div>
+            <button class="btn btn-ghost" id="approveBtn" type="button">Approve on this device</button>
+          </div>
+
+          <div class="capture-stats">
+            <div class="stat"><span>Call ID</span><b id="capCallId">—</b></div>
+            <div class="stat"><span>Model</span><b id="capModel">—</b></div>
+            <div class="stat"><span>Sample rate</span><b id="capSr">—</b></div>
+            <div class="stat"><span>Audio sent</span><b id="capSent">0.0 s</b></div>
+            <div class="stat"><span>State</span><b id="capState">—</b></div>
+          </div>
+        </div>
+
         <div class="live-panel">
-          <div class="mini-band" id="miniBand">
-            <p class="eyebrow">Risk band</p>
-            <div class="verdict" id="miniVerdict">—</div>
-            <p class="why" id="miniWhy">This is what the band looks like once a call is live. It stays exactly this — a dash — until scoring is actually available.</p>
+          <div class="live-band-2">
+            <div class="mini-band" id="miniBand">
+              <p class="eyebrow">Risk band</p>
+              <div class="verdict" id="miniVerdict">—</div>
+              <p class="why" id="miniWhy">Press Start capture above to begin.</p>
+            </div>
+            <div class="risk-canvas-wrap">
+              <p class="wstrip-wrap-label">Risk timeline — P(AI voice) per 4s window</p>
+              <canvas id="riskCanvas" height="150"></canvas>
+            </div>
           </div>
           <div class="legend">
             <div class="legend-row g"><span>Green — &lt; 35%</span><b>Consistent with a real voice</b></div>
@@ -397,13 +587,14 @@
         </div>
 
         <div class="note-box">
-          <strong>If the server isn't running,</strong> the link above simply
-          won't load — there's nothing to connect to. That's expected on a
-          machine that hasn't started it. <strong>If it's running but no
-          trained head was loaded</strong> (no <code>--ckpt</code>), capture,
-          pairing and consent all still work live — the page just reports
-          <em>"Scoring unavailable"</em> instead of a band, honestly, rather
-          than showing a made-up number.
+          <strong>If the server isn't running,</strong> Start capture will say
+          so rather than silently doing nothing — there's nothing to connect
+          to. <strong>If it's running but no trained head was loaded</strong>
+          (no <code>--ckpt</code>), capture, pairing and consent all still
+          work live — the band just reports <em>"Scoring unavailable"</em>
+          instead of a number, honestly, rather than showing a made-up one.
+          Microphone access needs a secure context — this works over
+          <code>localhost</code>, not over a plain LAN IP.
         </div>
       </div>
 
@@ -445,11 +636,22 @@
         </div>
 
         <div class="upload-result" id="uploadResult">
-          <div class="row"><span>File</span><b id="resFile">—</b></div>
-          <div class="row"><span>Model</span><b id="resModel">—</b></div>
-          <div class="row"><span>Windows scored</span><b id="resWindows">—</b></div>
-          <div class="row"><span>Mean score</span><b id="resMean">—</b></div>
-          <div class="row"><span>Band</span><b id="resBand">—</b></div>
+          <div class="upload-result-top">
+            <div class="upload-result-rows">
+              <div class="row"><span>File</span><b id="resFile">—</b></div>
+              <div class="row"><span>Model</span><b id="resModel">—</b></div>
+              <div class="row"><span>Windows scored</span><b id="resWindows">—</b></div>
+              <div class="row"><span>Mean score</span><b id="resMean">—</b></div>
+              <div class="row"><span>Band</span><b id="resBand">—</b></div>
+            </div>
+            <div class="score-gauge" id="scoreGauge" aria-hidden="true">
+              <svg viewBox="0 0 120 68">
+                <path class="gauge-track" d="M10,62 A50,50 0 0 1 110,62"/>
+                <path class="gauge-fill" id="gaugeFill" d="M10,62 A50,50 0 0 1 110,62"/>
+              </svg>
+              <div class="gauge-value" id="gaugeValue">—</div>
+            </div>
+          </div>
           <div class="wstrip-wrap">
             <span>Per-window score — left to right over the clip</span>
             <div class="wstrip" id="resStrip"></div>
@@ -469,11 +671,16 @@
 
 </main>
 
+<button class="to-top" id="toTop" type="button" aria-label="Back to top">
+  <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M8 13V3M3 7l5-5 5 5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+</button>
+
 <footer class="footer">
   <div class="wrap">
     <span>SONIX · SIH26104 · AICTE Cyber Security Cell</span>
     <nav>
       <a href="#home">Home</a>
+      <a href="#results">Results</a>
       <a href="#pipeline">Pipeline</a>
       <a href="#about">About</a>
       <a href="#ext-install">Extension</a>
@@ -481,6 +688,6 @@
   </div>
 </footer>
 
-<script src="script.js"></script>
+<script src="script.js?v=20260905"></script>
 </body>
 </html>

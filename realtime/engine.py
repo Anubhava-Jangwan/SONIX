@@ -26,7 +26,7 @@ class ScoringEngine:
         mock: bool = True,
         checkpoint_path: Optional[str] = None,
         device: Optional[str] = None,
-        batch_interval: float = 0.5,
+        batch_interval: float = 0.1,
         max_batch_size: int = 8,
         on_broadcast: Optional[Callable] = None
     ):

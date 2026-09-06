@@ -1,8 +1,11 @@
 /* SONIX marketing site — vanilla JS, no build step, no framework.
-   Pieces: nav (incl. accessible dropdown), the hero canvas animation, the
-   server-reachability check, the model picker, and the real upload-and-score
-   flow against the local API. Served by realtime/server.py at "/", so the API
-   is same-origin. */
+   Pieces: nav (incl. accessible dropdown, scroll-spy, theme toggle), the hero
+   canvas animation, animated stat counters, the pipeline walkthrough, the
+   server-reachability check, the model picker, the EMBEDDED live-capture
+   widget (mic -> WebSocket -> pairing -> risk band, all on this page), the
+   real upload-and-score flow, an illustrative threshold slider, and small
+   conveniences (copy buttons, back-to-top). Served by realtime/server.py at
+   "/", so the API is same-origin. */
 
 (() => {
   "use strict";
@@ -12,6 +15,7 @@
   const SERVER = location.protocol.startsWith("http")
     ? location.origin.replace(/\/$/, "")
     : "http://localhost:8000";
+  const WS_URL = SERVER.replace(/^http/, "ws") + "/ws";
   const AMBER_AT = 0.35, RED_AT = 0.65; // canonical thresholds — see realtime/miccapture.py
 
   const $ = (sel, root = document) => root.querySelector(sel);
@@ -77,6 +81,195 @@
     }));
   }
 
+  /* ------------------------------------------------------------ theme toggle
+     Three states — auto (follows the OS), light, dark — cycled by one button
+     and remembered per browser. Auto clears the override so the existing
+     prefers-color-scheme rules in styles.css take over again. */
+  function initThemeToggle() {
+    const btn = $("#themeToggle");
+    if (!btn) return;
+    const root = document.documentElement;
+    const ORDER = ["auto", "light", "dark"];
+    let mode = "auto";
+    try { mode = localStorage.getItem("sonix-theme") || "auto"; } catch (e) { /* private mode etc. */ }
+
+    function apply(m) {
+      mode = m;
+      if (m === "auto") root.removeAttribute("data-theme");
+      else root.setAttribute("data-theme", m);
+      btn.dataset.mode = m;
+      btn.setAttribute("aria-label", `Colour theme: ${m}. Click to change.`);
+      try { localStorage.setItem("sonix-theme", m); } catch (e) { /* ignore */ }
+    }
+
+    apply(mode);
+    btn.addEventListener("click", () => {
+      apply(ORDER[(ORDER.indexOf(mode) + 1) % ORDER.length]);
+    });
+  }
+
+  /* ------------------------------------------------------------ scroll-spy */
+  function initScrollSpy() {
+    const links = $$("#navlinks a[data-nav]");
+    if (!links.length) return;
+    const map = new Map(links.map((a) => [a.dataset.nav, a]));
+    const sections = [...map.keys()]
+      .map((id) => document.getElementById(id))
+      .filter(Boolean);
+    if (!sections.length) return;
+
+    const setActive = (id) => {
+      links.forEach((a) => a.removeAttribute("aria-current"));
+      map.get(id)?.setAttribute("aria-current", "true");
+    };
+
+    const io = new IntersectionObserver((entries) => {
+      const visible = entries
+        .filter((e) => e.isIntersecting)
+        .sort((a, b) => b.intersectionRatio - a.intersectionRatio);
+      if (visible[0]) setActive(visible[0].target.id);
+    }, { rootMargin: "-40% 0px -50% 0px", threshold: [0, .25, .5, .75, 1] });
+
+    sections.forEach((s) => io.observe(s));
+  }
+
+  /* ------------------------------------------------------------ back to top */
+  function initToTop() {
+    const btn = $("#toTop");
+    if (!btn) return;
+    window.addEventListener("scroll", () => {
+      btn.dataset.show = window.scrollY > 700 ? "true" : "false";
+    }, { passive: true });
+    btn.addEventListener("click", () => window.scrollTo({ top: 0, behavior: "smooth" }));
+  }
+
+  /* ------------------------------------------------------------ animated counters
+     Real, already-verified numbers (see docs/RESULTS_TABLE.md) — this only
+     animates the reveal, it never changes what's displayed. */
+  function initCounters() {
+    const els = $$(".count-up");
+    if (!els.length) return;
+    const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+    function animate(el) {
+      const target = parseFloat(el.dataset.target);
+      const decimals = parseInt(el.dataset.decimals || "0", 10);
+      const suffix = el.dataset.suffix || "";
+      if (!isFinite(target)) return;
+      if (reduceMotion) {
+        el.textContent = (decimals ? target.toFixed(decimals) : Math.round(target).toLocaleString()) + suffix;
+        return;
+      }
+      const dur = 1000;
+      const t0 = performance.now();
+      function tick(now) {
+        const p = Math.min(1, (now - t0) / dur);
+        const eased = 1 - Math.pow(1 - p, 3);
+        const val = target * eased;
+        el.textContent = (decimals ? val.toFixed(decimals) : Math.round(val).toLocaleString()) + suffix;
+        if (p < 1) requestAnimationFrame(tick);
+      }
+      requestAnimationFrame(tick);
+    }
+
+    const io = new IntersectionObserver((entries, obs) => {
+      entries.forEach((e) => {
+        if (e.isIntersecting) { animate(e.target); obs.unobserve(e.target); }
+      });
+    }, { threshold: .6 });
+    els.forEach((el) => io.observe(el));
+  }
+
+  /* ------------------------------------------------------------ pipeline walkthrough */
+  function initPipelineWalkthrough() {
+    const btn = $("#walkBtn");
+    const label = $("#walkLabel");
+    const svg = $("#pipeline-svg");
+    if (!btn || !svg) return;
+
+    const order = ["step-capture", "step-resample", "step-consent", "step-window",
+                    "step-vad", "step-embed", "step-head", "step-band", "step-audit"];
+    const nodes = order.map((id) => document.getElementById(id)).filter(Boolean);
+
+    let idx = -1, timer = null, playing = false;
+
+    function highlight(i) {
+      nodes.forEach((n) => n.classList.remove("walk-active"));
+      const n = nodes[i];
+      if (!n) { label.textContent = "Click a step, or press play"; return; }
+      n.classList.add("walk-active");
+      label.textContent = n.dataset.stepTitle || "";
+    }
+
+    function step() {
+      idx = (idx + 1) % nodes.length;
+      highlight(idx);
+    }
+
+    function play() {
+      playing = true;
+      btn.textContent = "⏸ Pause walkthrough";
+      btn.setAttribute("aria-pressed", "true");
+      step();
+      timer = setInterval(step, 1700);
+    }
+    function pause() {
+      playing = false;
+      btn.textContent = "▶ Walk through the pipeline";
+      btn.setAttribute("aria-pressed", "false");
+      if (timer) clearInterval(timer);
+      timer = null;
+    }
+
+    btn.addEventListener("click", () => (playing ? pause() : play()));
+
+    nodes.forEach((n, i) => {
+      n.addEventListener("click", () => {
+        pause();
+        idx = i;
+        highlight(i);
+      });
+    });
+
+    svg.addEventListener("mouseleave", () => { if (!playing) highlight(-1); });
+  }
+
+  /* ------------------------------------------------------------ copy buttons */
+  function initCopyButtons() {
+    $$("code.copyable").forEach((el) => {
+      el.addEventListener("click", async () => {
+        try {
+          await navigator.clipboard.writeText(el.textContent.replace(/\s*copy(?:ied)?\s*$/i, ""));
+          el.dataset.copied = "true";
+          setTimeout(() => { delete el.dataset.copied; }, 1400);
+        } catch (e) { /* clipboard unavailable — fine, it's just a convenience */ }
+      });
+    });
+  }
+
+  /* ------------------------------------------------------------ illustrative threshold slider */
+  function initGaugeDemo() {
+    const slider = $("#gaugeSlider");
+    const valueEl = $("#gaugeSliderValue");
+    const bandEl = $("#gaugeSliderBand");
+    if (!slider) return;
+    const descriptions = {
+      g: "Green — consistent with a real voice",
+      a: "Amber — uncertain, treat with caution",
+      r: "Red — likely synthetic, verify another way",
+    };
+    function render() {
+      const v = Number(slider.value) / 100;
+      const band = bandFor(v);
+      valueEl.textContent = `${slider.value}%`;
+      valueEl.style.color = band.css;
+      bandEl.textContent = descriptions[band.cls];
+      bandEl.style.color = band.css;
+    }
+    slider.addEventListener("input", render);
+    render();
+  }
+
   /* ------------------------------------------------------------ hero canvas
      A mouse-repel particle field with a soft animated waveform layered
      underneath, both in one canvas. Lightweight on purpose. */
@@ -97,7 +290,7 @@
     const MAX_PARTICLES = 70;
 
     function tone() {
-      const dark = window.matchMedia("(prefers-color-scheme: dark)").matches;
+      const dark = getComputedStyle(document.documentElement).getPropertyValue("--bg").trim() !== "#ffffff";
       return {
         particle: dark ? "rgba(238,244,244,0.5)" : "rgba(22,23,26,0.35)",
         line: dark ? "rgba(238,244,244,0.10)" : "rgba(22,23,26,0.08)",
@@ -236,11 +429,32 @@
       document.hidden ? stop() : start();
     });
 
+    const themeBtn = $("#themeToggle");
+    themeBtn?.addEventListener("click", () => { if (reduceMotion) drawStatic(); });
     if (window.matchMedia) {
       window.matchMedia("(prefers-color-scheme: dark)").addEventListener?.("change", () => {
         if (reduceMotion) drawStatic();
       });
     }
+  }
+
+  /* ------------------------------------------------------------ file:// guard
+     "No server detected" has two very different causes: the server really
+     isn't running, or this page was opened by double-clicking index.html
+     (file://) instead of through the server at http://localhost:8000/ — in
+     which case even a running server can't be reached, because the fetch
+     below is cross-origin from a null file:// origin and the browser blocks
+     it before any status pill logic even runs. Say that plainly instead of
+     leaving it looking identical to "server is down". */
+  function initFileProtocolWarning() {
+    if (location.protocol !== "file:") return;
+    const bar = document.createElement("div");
+    bar.className = "file-warning";
+    bar.innerHTML = `<div class="wrap"><strong>You opened this file directly.</strong>
+      That's why nothing here can reach the server — start it, then open
+      <code>http://localhost:8000/</code> in your browser instead of double-clicking
+      this file. Command: <code class="copyable">python -m realtime.server --ws-port 8000 --mode webrtc</code></div>`;
+    document.body.prepend(bar);
   }
 
   /* ------------------------------------------------------------ server reachability */
@@ -273,15 +487,42 @@
     return { name: "Green", cls: "g", css: "var(--good)" };
   }
 
-  async function initLiveStatus() {
+  function renderBandInto(verdictEl, whyEl, score, scoringAvailable) {
+    if (!verdictEl || !whyEl) return;
+    if (!scoringAvailable) {
+      verdictEl.textContent = "Scoring unavailable";
+      verdictEl.style.color = "var(--ink-3)";
+      whyEl.textContent = "Server is running without a trained head (--ckpt). Capture is live; no verdict is shown.";
+      return;
+    }
+    if (score === null || score === undefined) {
+      verdictEl.textContent = "—";
+      verdictEl.style.color = "var(--ink-3)";
+      whyEl.textContent = "Waiting for the first 4-second window.";
+      return;
+    }
+    const band = bandFor(score);
+    verdictEl.textContent = `${band.name} · ${Math.round(score * 100)}%`;
+    verdictEl.style.color = band.css;
+    const action = { g: "Consistent with a real voice.", a: "Uncertain — treat with caution.", r: "Likely synthetic — verify another way." }[band.cls];
+    whyEl.textContent = `${action} (Amber ≥ 35%, Red ≥ 65% — provisional thresholds)`;
+  }
+
+  let captureIsRunning = false; // shared with initLiveStatus so it doesn't clobber a live session's readout
+
+  let lastKnownUp = null; // undefined until the first check resolves
+
+  async function refreshServerStatus() {
     const result = await checkServer();
 
     if (!result.up) {
-      setPill("micStatus", "micStatusText", "down", "No local server detected — start it to see this live");
+      setPill("micStatus", "micStatusText", "down", "No local server detected — start it, then Start capture below will work");
       setPill("uploadStatus", "uploadStatusText", "down", "No local server detected — uploads will not send anywhere");
-      const verdict = $("#miniVerdict"), why = $("#miniWhy");
-      if (verdict) { verdict.textContent = "—"; verdict.style.color = "var(--ink-3)"; }
-      if (why) why.textContent = "Server not reachable on localhost:8000 from this page right now.";
+      if (!captureIsRunning) {
+        const why = $("#miniWhy");
+        if (why) why.textContent = "Server not reachable on localhost:8000 from this page right now.";
+      }
+      lastKnownUp = false;
       return;
     }
 
@@ -291,39 +532,49 @@
     setPill("uploadStatus", "uploadStatusText", "up",
       scoringOn ? "Server running — uploads will be scored for real" : "Server running — scoring is switched off (no --ckpt)");
 
-    const verdict = $("#miniVerdict"), why = $("#miniWhy");
-    if (verdict && why) {
-      if (scoringOn) {
-        verdict.textContent = "Ready";
-        verdict.style.color = "var(--good)";
-        why.textContent = "A trained head is loaded. Start capture on the mic page to see real scores.";
-      } else {
-        verdict.textContent = "Scoring unavailable";
-        verdict.style.color = "var(--ink-3)";
-        why.textContent = "Server is running without a trained head (--ckpt). Capture and consent still work live; no verdict is shown.";
-      }
+    // The server only just came up since the last check (e.g. it was started
+    // after this page was already open) — the pill would otherwise have sat
+    // on "down" forever, since nothing used to re-check it after page load.
+    if (lastKnownUp === false && !captureIsRunning) {
+      const why = $("#miniWhy");
+      if (why) why.textContent = "Server just came online — press Start capture above to begin.";
     }
+    lastKnownUp = true;
+  }
+
+  function initLiveStatus() {
+    refreshServerStatus();
+    // Same-origin GET to /api/status, a few hundred bytes, every 4s — cheap
+    // enough to just keep polling so the pills self-heal without a refresh.
+    setInterval(refreshServerStatus, 4000);
   }
 
   /* ------------------------------------------------------------ model picker
-     Fills the upload model dropdown from /api/models — only heads present on
-     disk. Left disabled (just "Server default") when the server is unreachable
-     or in mock mode. */
-  async function initModelPicker() {
-    const sel = $("#modelSelect"), note = $("#modelNote");
-    if (!sel) return;
-    let data;
+     Fills a model <select> from /api/models — only heads present on disk.
+     Left disabled (just "Server default") when the server is unreachable or
+     in mock mode. Shared between the Upload picker and the Live Voice
+     Detection picker so both offer every trained head the same way. */
+  let modelsCache = null;
+  async function fetchModels() {
+    if (modelsCache) return modelsCache;
     try {
       const res = await fetch(`${SERVER}/api/models`);
-      if (!res.ok) return;
-      data = await res.json();
-    } catch (e) { return; }
+      if (!res.ok) return null;
+      modelsCache = await res.json();
+      return modelsCache;
+    } catch (e) { return null; }
+  }
+
+  async function populateModelSelect(sel, note) {
+    if (!sel) return null;
+    const data = await fetchModels();
+    if (!data) return null;
 
     if (data.mock || !data.models || !data.models.length) {
       if (note) note.textContent = data.mock
         ? "Server is in mock mode — no real heads to choose from."
         : "";
-      return;
+      return data;
     }
 
     const byKey = {};
@@ -345,6 +596,29 @@
     };
     sel.addEventListener("change", reflect);
     reflect();
+    return data;
+  }
+
+  async function initModelPicker() {
+    await populateModelSelect($("#modelSelect"), $("#modelNote"));
+  }
+
+  /* ------------------------------------------------------------ score gauge (upload result) */
+  function setGauge(score) {
+    const fill = $("#gaugeFill"), valueEl = $("#gaugeValue");
+    if (!fill || !valueEl) return;
+    const total = fill.getTotalLength();
+    fill.style.strokeDasharray = `${total}`;
+    if (score === null || score === undefined) {
+      fill.style.strokeDashoffset = `${total}`;
+      fill.style.stroke = "var(--ink-3)";
+      valueEl.textContent = "—";
+      return;
+    }
+    const clamped = Math.max(0, Math.min(1, score));
+    fill.style.strokeDashoffset = `${total * (1 - clamped)}`;
+    fill.style.stroke = bandFor(clamped).css;
+    valueEl.textContent = `${Math.round(clamped * 100)}%`;
   }
 
   /* ------------------------------------------------------------ upload flow
@@ -356,6 +630,7 @@
     const dzMain = $("#dzMain");
     const resultBox = $("#uploadResult");
     if (!dz || !input) return;
+    setGauge(null);
 
     const openPicker = () => input.click();
     dz.addEventListener("click", openPicker);
@@ -376,7 +651,7 @@
     });
 
     async function handleFile(file) {
-      dzMain.textContent = `Scoring “${file.name}”… (loads the head on first use — up to ~20s)`;
+      dzMain.textContent = `Scoring "${file.name}"… (loads the head on first use — up to ~20s)`;
       resultBox.dataset.show = "false";
 
       const reach = await checkServer(1500);
@@ -425,11 +700,13 @@
         $("#resBand").textContent = "No windows scored (too short, or all silence)";
         $("#resBand").style.color = "var(--ink-3)";
         if (strip) strip.replaceChildren();
+        setGauge(null);
       } else {
         const band = bandFor(mean);
         $("#resMean").textContent = `${(mean * 100).toFixed(1)}%`;
         $("#resBand").textContent = band.name;
         $("#resBand").style.color = band.css;
+        setGauge(mean);
         if (strip) {
           strip.replaceChildren();
           for (const v of scores) {
@@ -445,12 +722,315 @@
     }
   }
 
+  /* ------------------------------------------------------------ embedded live capture
+     Everything the old standalone /mic page did — getUserMedia, an
+     AudioWorklet resampled to 16kHz, streaming PCM16 over the same
+     WebSocket, showing the pairing code, and the risk timeline — ported
+     onto this page so "Live Voice Detection" never navigates anywhere. The
+     pairing code is now approved with a button right here (POST
+     /api/approve), instead of requiring the separate Streamlit dashboard. */
+  const WORKLET_SRC = `
+class Cap extends AudioWorkletProcessor {
+  process(inputs){
+    const ch = inputs[0][0];
+    if (ch) this.port.postMessage(new Float32Array(ch));
+    return true;
+  }
+}
+registerProcessor('cap', Cap);
+`;
+
+  function floatToPCM16(f32) {
+    const out = new Int16Array(f32.length);
+    for (let i = 0; i < f32.length; i++) {
+      let s = Math.max(-1, Math.min(1, f32[i]));
+      out[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
+    }
+    return out;
+  }
+
+  function initLiveCapture() {
+    const btn = $("#captureBtn");
+    if (!btn) return;
+
+    const levelBar = $("#levelBar");
+    const pairingBox = $("#pairingBox");
+    const pairingCode = $("#pairingCode");
+    const approveBtn = $("#approveBtn");
+    const capCallId = $("#capCallId");
+    const capModel = $("#capModel");
+    const capSr = $("#capSr");
+    const capSent = $("#capSent");
+    const capState = $("#capState");
+    const verdictEl = $("#miniVerdict");
+    const whyEl = $("#miniWhy");
+    const canvas = $("#riskCanvas");
+    const modelSelect = $("#captureModelSelect");
+    const modelNote = $("#captureModelNote");
+
+    populateModelSelect(modelSelect, modelNote);
+
+    if (!navigator.mediaDevices || !window.AudioWorkletNode) {
+      btn.disabled = true;
+      btn.textContent = "Mic capture not supported in this browser";
+      whyEl.textContent = "This browser lacks AudioWorklet support — use Chrome or Edge.";
+      return;
+    }
+
+    let ws = null, ctx = null, node = null, stream = null, running = false;
+    let sentSamples = 0, callId = null, scoringAvailable = false, lastScore = null;
+    const scoresByIdx = new Map();
+
+    function resetReadout() {
+      lastScore = null;
+      scoresByIdx.clear();
+      renderScores();
+      pairingBox.hidden = true;
+      capCallId.textContent = "—";
+      capModel.textContent = "—";
+      capSr.textContent = "—";
+      capSent.textContent = "0.0 s";
+      capState.textContent = "—";
+      levelBar.style.width = "0%";
+    }
+
+    function renderScores() {
+      const vals = [...scoresByIdx.values()];
+      if (vals.length) {
+        const latestIdx = Math.max(...scoresByIdx.keys());
+        lastScore = scoresByIdx.get(latestIdx);
+      } else {
+        lastScore = null;
+      }
+      renderBandInto(verdictEl, whyEl, lastScore, scoringAvailable);
+      drawRisk();
+    }
+
+    function drawRisk() {
+      if (!canvas) return;
+      const dpr = window.devicePixelRatio || 1;
+      const cssW = canvas.clientWidth || 460, cssH = canvas.clientHeight || 320;
+      canvas.width = cssW * dpr; canvas.height = cssH * dpr;
+      const g = canvas.getContext("2d");
+      g.setTransform(dpr, 0, 0, dpr, 0, 0);
+      g.clearRect(0, 0, cssW, cssH);
+
+      const cs = getComputedStyle(document.documentElement);
+      const good = cs.getPropertyValue("--good").trim() || "#16a34a";
+      const warn = cs.getPropertyValue("--warn").trim() || "#d97706";
+      const crit = cs.getPropertyValue("--crit").trim() || "#dc2626";
+      const ink3 = cs.getPropertyValue("--ink-3").trim() || "#8a8f98";
+      const ink = cs.getPropertyValue("--ink").trim() || "#16171a";
+
+      const padL = 36, padR = 12, padT = 10, padB = 20;
+      const w = cssW - padL - padR, h = cssH - padT - padB;
+      const pts = [...scoresByIdx.entries()].sort((a, b) => a[0] - b[0]);
+      const maxIdx = pts.length ? pts[pts.length - 1][0] : 0;
+      const spanIdx = Math.max(20, maxIdx);
+      const X = (i) => padL + (spanIdx ? (i / spanIdx) * w : 0);
+      const Y = (s) => padT + (1 - s) * h;
+
+      const bands = [[0, AMBER_AT, good], [AMBER_AT, RED_AT, warn], [RED_AT, 1, crit]];
+      g.globalAlpha = 0.10;
+      for (const [lo, hi, col] of bands) {
+        g.fillStyle = col;
+        g.fillRect(padL, Y(hi), w, Y(lo) - Y(hi));
+      }
+      g.globalAlpha = 1;
+
+      g.lineWidth = 1; g.font = "10px system-ui"; g.setLineDash([4, 3]);
+      for (const [y, col, txt] of [[AMBER_AT, warn, "Amber"], [RED_AT, crit, "Red"]]) {
+        g.strokeStyle = col; g.beginPath(); g.moveTo(padL, Y(y)); g.lineTo(padL + w, Y(y)); g.stroke();
+        g.fillStyle = col; g.fillText(txt, padL + w - 32, Y(y) - 3);
+      }
+      g.setLineDash([]);
+
+      g.fillStyle = ink3;
+      g.fillText("100%", 2, Y(1) + 3);
+      g.fillText("50%", 6, Y(0.5) + 3);
+      g.fillText("0%", 12, Y(0) + 3);
+      g.fillText("time →", padL, cssH - 5);
+
+      if (pts.length) {
+        g.strokeStyle = ink; g.lineWidth = 2; g.beginPath();
+        pts.forEach(([i, s], k) => { const x = X(i), y = Y(s); k ? g.lineTo(x, y) : g.moveTo(x, y); });
+        g.stroke();
+        g.fillStyle = ink;
+        pts.forEach(([i, s]) => { g.beginPath(); g.arc(X(i), Y(s), 2.6, 0, Math.PI * 2); g.fill(); });
+      }
+    }
+
+    async function start() {
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({
+          audio: { channelCount: 1, echoCancellation: false, noiseSuppression: false, autoGainControl: false }
+        });
+      } catch (e) {
+        whyEl.textContent = "The browser blocked microphone access. Allow it for this site — it needs a secure context (localhost is fine).";
+        return;
+      }
+
+      const reach = await checkServer(1500);
+      if (!reach.up) {
+        whyEl.textContent = "No local server reachable at " + SERVER + " — start it, then press Start capture again.";
+        stream.getTracks().forEach((t) => t.stop());
+        stream = null;
+        return;
+      }
+      scoringAvailable = !!reach.data.scoring_available;
+      if (reach.data.scoring_synthetic) {
+        whyEl.textContent = "UNTRAINED dev checkpoint loaded — every score will be noise (plumbing/latency test only).";
+      }
+
+      scoresByIdx.clear();
+      renderScores();
+
+      ctx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
+      await ctx.audioWorklet.addModule(URL.createObjectURL(new Blob([WORKLET_SRC], { type: "application/javascript" })));
+      capSr.textContent = ctx.sampleRate + " Hz" + (ctx.sampleRate === 16000 ? "" : " (resampled)");
+
+      ws = new WebSocket(WS_URL);
+      ws.binaryType = "arraybuffer";
+
+      ws.onopen = () => {
+        capState.textContent = "CONNECTING";
+        ws.send(JSON.stringify({
+          type: "start_mic_call",
+          sample_rate: ctx.sampleRate,
+          caller: "website",
+          model: modelSelect?.value || undefined,
+        }));
+      };
+
+      ws.onmessage = (ev) => {
+        if (typeof ev.data !== "string") return;
+        let m; try { m = JSON.parse(ev.data); } catch { return; }
+
+        if (m.type === "error") {
+          whyEl.textContent = m.message || "The server rejected this capture request.";
+          stop();
+          return;
+        }
+        if (m.type === "mic_call_started") {
+          callId = m.call_id;
+          capCallId.textContent = callId;
+          capModel.textContent = m.model || "server default";
+          pairingCode.textContent = m.pairing_code;
+          pairingBox.hidden = false;
+          capState.textContent = "CONSENT_PENDING";
+        }
+        if (m.type === "pairing_request" && m.call_id === callId) {
+          pairingCode.textContent = m.pairing_code;
+        }
+        if (m.type === "scores" && callId && m.data && m.data[callId]) {
+          if (!scoringAvailable) return;
+          const d = m.data[callId];
+          const items = (Array.isArray(d.batch) && d.batch.length) ? d.batch : [{ window_idx: d.window_idx, score: d.score }];
+          for (const it of items) {
+            if (it && it.window_idx != null && it.score != null) {
+              scoresByIdx.set(it.window_idx, Math.max(0, Math.min(1, it.score)));
+            }
+          }
+          renderScores();
+        }
+        if (m.type === "call_state" && m.call_id === callId) {
+          capState.textContent = m.state.toUpperCase();
+          if (m.state === "listening" || m.state === "scoring") {
+            pairingBox.hidden = true;
+          }
+        }
+      };
+
+      ws.onerror = () => { whyEl.textContent = "WebSocket error — could not reach the server."; };
+      ws.onclose = () => { if (running) stop(); };
+
+      const src = ctx.createMediaStreamSource(stream);
+      node = new AudioWorkletNode(ctx, "cap");
+
+      node.port.onmessage = (ev) => {
+        const f32 = ev.data;
+        let peak = 0;
+        for (let i = 0; i < f32.length; i++) { const a = Math.abs(f32[i]); if (a > peak) peak = a; }
+        levelBar.style.width = Math.min(100, peak * 140) + "%";
+
+        if (ws && ws.readyState === WebSocket.OPEN) {
+          ws.send(floatToPCM16(f32).buffer);
+          sentSamples += f32.length;
+          capSent.textContent = (sentSamples / ctx.sampleRate).toFixed(1) + " s";
+        }
+      };
+
+      src.connect(node);
+      const mute = ctx.createGain(); mute.gain.value = 0;
+      node.connect(mute).connect(ctx.destination);
+
+      running = true;
+      captureIsRunning = true;
+      btn.textContent = "Stop capture";
+      btn.classList.add("is-recording");
+      approveBtn.disabled = false;
+      if (modelSelect) modelSelect.disabled = true;
+    }
+
+    function stop() {
+      running = false;
+      captureIsRunning = false;
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        if (callId) ws.send(JSON.stringify({ type: "end_call", call_id: callId }));
+        ws.close();
+      }
+      if (node) node.disconnect();
+      if (stream) stream.getTracks().forEach((t) => t.stop());
+      if (ctx) ctx.close();
+      ws = node = stream = ctx = null;
+      callId = null;
+      btn.textContent = "Start capture";
+      btn.classList.remove("is-recording");
+      if (modelSelect && modelSelect.options.length > 1) modelSelect.disabled = false;
+      resetReadout();
+      whyEl.textContent = "Press Start capture above to begin.";
+    }
+
+    btn.addEventListener("click", () => (running ? stop() : start()));
+
+    approveBtn.addEventListener("click", async () => {
+      if (!callId) return;
+      approveBtn.disabled = true;
+      approveBtn.textContent = "Approving…";
+      try {
+        const res = await fetch(`${SERVER}/api/approve`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ call_id: callId }),
+        });
+        if (!res.ok) throw new Error(String(res.status));
+        approveBtn.textContent = "Approved";
+      } catch (e) {
+        approveBtn.disabled = false;
+        approveBtn.textContent = "Approve on this device";
+        whyEl.textContent = "Could not approve — the server may have restarted. Try Stop, then Start capture again.";
+      }
+    });
+
+    window.addEventListener("resize", drawRisk);
+    resetReadout();
+  }
+
   /* ------------------------------------------------------------ boot */
   document.addEventListener("DOMContentLoaded", () => {
+    initFileProtocolWarning();
     initNav();
+    initThemeToggle();
+    initScrollSpy();
+    initToTop();
+    initCounters();
+    initPipelineWalkthrough();
+    initCopyButtons();
+    initGaugeDemo();
     initHeroCanvas();
     initLiveStatus();
     initModelPicker();
     initUpload();
+    initLiveCapture();
   });
 })();

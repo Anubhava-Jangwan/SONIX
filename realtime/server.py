@@ -259,13 +259,28 @@ class SonicServer:
             }))
             return
 
+        # Same "which head" pick the upload path offers, mirrored here so the
+        # live capture widget on the website can pass a model too instead of
+        # always taking the server default.
+        requested = (data.get("model") or "").strip() or None
+        if requested and not self.mock:
+            try:
+                await asyncio.to_thread(self.engine.ensure_model, requested)
+            except Exception as exc:
+                await ws.send_str(json.dumps({
+                    "type": "error", "message": f"model '{requested}' unavailable: {exc}"
+                }))
+                return
+        model_key = requested or (self.engine.default_key if not self.mock else None)
+
         call_id = f"mic_{datetime.now().strftime('%Y%m%dT%H%M%S')}"
         pairing_code = self.pairing_manager.generate()
         sample_rate = int(data.get("sample_rate") or TARGET_SR)
 
         source = MicSource(caller=data.get("caller", "browser-mic"), sample_rate=sample_rate)
         session = Session(call_id, source, pairing_code=pairing_code,
-                          vad_energy=getattr(self, 'vad_energy', None))
+                          vad_energy=getattr(self, 'vad_energy', None),
+                          model_key=model_key)
 
         # CONNECTING -> CONSENT_PENDING. Without this, on_pairing_approved() is a
         # no-op and push_audio() silently drops every chunk.
@@ -288,6 +303,7 @@ class SonicServer:
             "call_id": call_id,
             "pairing_code": pairing_code,
             "sample_rate": sample_rate,
+            "model": model_key,
         }))
         await self._broadcast({
             "type": "pairing_request",
@@ -296,7 +312,7 @@ class SonicServer:
             "expires_in": 120,
             "caller": source.caller,
         })
-        logger.info(f"Mic call {call_id} started @ {sample_rate} Hz, code {pairing_code}")
+        logger.info(f"Mic call {call_id} started @ {sample_rate} Hz, code {pairing_code}, model={model_key}")
 
     async def http_approve_handler(self, request):
         """Approve a pairing code from the dashboard (HTTP, so Streamlit can call it)."""
@@ -381,6 +397,17 @@ class SonicServer:
         rms = np.sqrt(np.mean(np.square(w[:nf * frame].reshape(nf, frame).astype(np.float64)), axis=1))
         speech = float(np.percentile(rms, 90))          # a loud frame, not the peak
         floor = float(np.clip(speech * 0.12, 0.0006, 0.01))
+
+        # The 0.0006 lower clamp defeats the whole point of adapting for a very
+        # quiet clip: below roughly -65 dBFS it lands ABOVE the clip's own
+        # speech level, so every frame fails the energy test and the upload
+        # scores 0 of N windows. Measured: p90 frame RMS 0.000564 -> clamped
+        # floor 0.0006 -> 0/41 windows passed. Cap the floor at half the
+        # measured speech level so it can never exceed the signal it is meant
+        # to sit under. Dead audio is still rejected -- the ZCR ceiling catches
+        # it independently of energy (digital silence zcr=0.000, dither and
+        # room tone zcr~0.50, all rejected with the energy gate fully open).
+        floor = min(floor, speech * 0.5)
         return floor, speech, 20.0 * np.log10(max(floor, 1e-12))
 
     async def _feed_upload(self, call_id: str, session, source, chunk: int = 8000,

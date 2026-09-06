@@ -41,9 +41,49 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-st.markdown("""<style>.metric-box { padding: 1.5rem; border-radius: 0.5rem; background: #f0f2f6; }
-.score-high { color: #ff0000; font-weight: bold; } .score-low { color: #00aa00; font-weight: bold; }
-</style>""", unsafe_allow_html=True)
+# One presentation-only stylesheet. Neutral greys only (they read the same in
+# light and dark); the Green/Amber/Red tokens live in the charts, never here.
+# Goal: drop the billboard-sized default Streamlit metrics and loose spacing for
+# a tighter product-dashboard rhythm.
+FONT_STACK = "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif"
+st.markdown(
+    f"""<style>
+    html, body, [class*="css"], .stMarkdown, button, input {{ font-family: {FONT_STACK}; }}
+
+    /* Kill the huge top gap; give the content a sane max width. */
+    .block-container {{ padding-top: 2.4rem; padding-bottom: 3rem; max-width: 1440px; }}
+
+    /* Titles: deliberate hierarchy, not the default oversized serif-ish stack. */
+    h1 {{ font-size: 30px !important; font-weight: 800 !important; letter-spacing: -.02em; }}
+    h2 {{ font-size: 20px !important; font-weight: 700 !important; }}
+    h3 {{ font-size: 16px !important; font-weight: 700 !important; }}
+
+    /* Metrics as compact cards instead of billboards. */
+    [data-testid="stMetric"] {{
+        background: rgba(137,135,129,.06);
+        border: 1px solid rgba(137,135,129,.18);
+        border-radius: 12px; padding: 10px 14px;
+    }}
+    [data-testid="stMetricLabel"] p {{
+        font-size: 11px; font-weight: 700; letter-spacing: .12em;
+        text-transform: uppercase; opacity: .6;
+    }}
+    [data-testid="stMetricValue"] {{
+        font-size: 24px; font-weight: 700; font-variant-numeric: tabular-nums;
+    }}
+
+    /* Tab bar: quieter, tighter. */
+    [data-baseweb="tab-list"] {{ gap: 4px; border-bottom: 1px solid rgba(137,135,129,.22); }}
+    [data-baseweb="tab"] {{ font-weight: 600; padding: 8px 12px; }}
+
+    /* Expander header for each call: readable, not a blank bar. */
+    [data-testid="stExpander"] summary {{ font-weight: 600; font-size: 14px; }}
+    [data-testid="stExpander"] {{ border-radius: 12px; }}
+
+    hr {{ margin: 1rem 0; opacity: .5; }}
+    </style>""",
+    unsafe_allow_html=True,
+)
 
 # Use defaults (no secrets required)
 WS_URL = "ws://localhost:8000"
@@ -53,8 +93,9 @@ st.sidebar.title("⚙️ SONIX Control")
 server_url = st.sidebar.text_input("Server URL", HTTP_URL)
 ws_url = st.sidebar.text_input("WebSocket URL", WS_URL)
 
-st.title("🎯 SONIX Live Call Detection")
-st.markdown("Real-time AI voice-clone detection powered by wav2vec2 + MLP head")
+st.title("SONIX — Live Call Detection")
+st.caption("Real-time AI voice-clone screening · frozen wav2vec2 XLS-R + trained MLP head · "
+           "flags for a human to verify, never blocks a call")
 
 if 'calls' not in st.session_state:
     st.session_state.calls = {}
@@ -124,6 +165,17 @@ def post_json(path, payload):
 GOOD, WARNING, CRITICAL = "#0ca30c", "#fab219", "#d03b3b"
 SERIES_1, MUTED = "#2a78d6", "#898781"
 GRID = "rgba(137,135,129,0.22)"
+
+# Plain-English band meanings for the compact legend under every timeline.
+# Colour is a signal, never the only one -- the word and the sentence carry it.
+BAND_LEGEND = (
+    (GOOD, "Green", "consistent with real voice"),
+    (WARNING, "Amber", "uncertain"),
+    (CRITICAL, "Red", "likely synthetic"),
+)
+# Shown as a watermark across any timeline whose scores are not a real trained
+# head's output (mock / untrained dev checkpoint). Not a caption -- unmissable.
+SYNTH_WATERMARK = "SCORES ARE NOT A REAL VERDICT — untrained head"
 
 # Data-driven defaults from the eval score distribution, matching demo/app.py.
 # They came from the CLEAN benchmark and have NOT been recalibrated on real
@@ -206,26 +258,108 @@ def band_for(score):
     return "Green", GOOD
 
 
+def band_word(score):
+    """Just the band word ('Green' / 'Amber' / 'Red' / '—') for hover + readout."""
+    return band_for(score)[0] if score is not None else "—"
+
+
+def score_readout(score, *, synthetic=False):
+    """Projector-legible current-score panel: big percentage + band word in the
+    band colour, with the band also stated in words (never colour alone)."""
+    name, colour = band_for(score)
+    pct = f"{score:.0%}" if score is not None else "—"
+    warn = (
+        f"<div style='font-size:12px;font-weight:700;letter-spacing:.12em;"
+        f"color:{CRITICAL};margin-top:8px'>{SYNTH_WATERMARK.upper()}</div>"
+        if synthetic else ""
+    )
+    return (
+        f"<div style='border:1px solid rgba(137,135,129,.35);border-radius:14px;"
+        f"padding:16px 22px;background:rgba(137,135,129,.06)'>"
+        f"<span style='font-size:12px;font-weight:700;letter-spacing:.16em;"
+        f"color:{MUTED}'>CURRENT P(AI VOICE)</span><br>"
+        f"<span style='font-size:60px;font-weight:800;line-height:1.1;"
+        f"color:{colour}'>{pct}</span>"
+        f"<span style='font-size:28px;font-weight:700;color:{colour};"
+        f"margin-left:16px'>{name}</span>{warn}</div>"
+    )
+
+
+def band_legend_md():
+    """Compact one-line legend: swatch + word + plain-English meaning per band."""
+    cells = " &nbsp;&nbsp; ".join(
+        f"<span style='color:{c};font-weight:700'>&#9632;</span> "
+        f"<b>{n}</b> <span style='color:{MUTED}'>= {meaning}</span>"
+        for c, n, meaning in BAND_LEGEND
+    )
+    return f"<div style='font-size:12.5px;margin:4px 0 2px'>{cells}</div>"
+
+
+def is_synthetic_head():
+    """True when the server's loaded head is mock or an untrained dev checkpoint,
+    so a rendered timeline must be watermarked. Read from /api/status, which the
+    server already reports -- no new endpoint, no server change."""
+    try:
+        resp = requests.get(f"{server_url}/api/status", timeout=2)
+        if resp.status_code == 200:
+            j = resp.json()
+            return bool(j.get("scoring_synthetic")) or not j.get("scoring_available", False)
+    except Exception:
+        pass
+    return False
+
+
+def _risk_bands(fig, overlay=None):
+    """Green/Amber/Red bands + dotted threshold lines at the live AMBER_AT /
+    RED_AT, 0-100% y-axis with gridlines only at 25/50/75, subtle update
+    transition, and an optional watermark. One definition so the live and
+    upload timelines cannot drift apart."""
+    for lo, hi, colour in ((0, AMBER_AT, GOOD), (AMBER_AT, RED_AT, WARNING),
+                           (RED_AT, 1, CRITICAL)):
+        fig.add_hrect(y0=lo, y1=hi, fillcolor=colour, opacity=0.07,
+                      line_width=0, layer="below")
+    for y, label, colour in ((AMBER_AT, "Amber", WARNING), (RED_AT, "Red", CRITICAL)):
+        fig.add_hline(y=y, line=dict(color=colour, width=1, dash="dot"),
+                      annotation_text=f"{label} {y:.0%}", annotation_position="right",
+                      annotation_font=dict(color=colour, size=11))
+    fig.update_yaxes(range=[0, 1], tickformat=".0%", tickvals=[0.25, 0.50, 0.75])
+    # ponytail: layout transition, not per-point frames. New scores ease in and
+    # Streamlit reruns don't flash; a true point-by-point enter animation would
+    # need go.Frame plumbing that isn't worth the redraw cost on a GPU-bound box.
+    fig.update_layout(transition=dict(duration=350, easing="cubic-in-out"))
+    if overlay:
+        fig.add_annotation(text=overlay, showarrow=False, xref="paper", yref="paper",
+                           x=0.5, y=0.5, font=dict(size=20, color=CRITICAL),
+                           bgcolor="rgba(255,255,255,0.82)", bordercolor=CRITICAL,
+                           borderwidth=1, borderpad=10)
+    return fig
+
+
 def base_layout(fig, height=300, y_title=""):
     fig.update_layout(
         height=height,
         margin=dict(l=8, r=8, t=8, b=8),
         paper_bgcolor="rgba(0,0,0,0)",
         plot_bgcolor="rgba(0,0,0,0)",
-        font=dict(color=MUTED, size=12),
+        font=dict(color=MUTED, size=12, family=FONT_STACK),
         hovermode="x unified",
         legend=dict(orientation="h", yanchor="bottom", y=1.02, x=0,
                     bgcolor="rgba(0,0,0,0)", font=dict(size=12)),
     )
-    fig.update_xaxes(title_text="Seconds into call", gridcolor=GRID,
+    # Vertical gridlines are chartjunk here; keep the axis line + ticks only.
+    fig.update_xaxes(title_text="Seconds into call", showgrid=False,
                      zeroline=False, linecolor=GRID, ticks="outside", tickcolor=GRID)
     fig.update_yaxes(title_text=y_title, gridcolor=GRID,
                      zeroline=False, linecolor=GRID, ticks="outside", tickcolor=GRID)
     return fig
 
 
-def risk_chart(windows, scores, t0):
-    """P(AI voice) over time, with the Green/Amber/Red decision bands behind it."""
+def risk_chart(windows, scores, t0, overlay=None):
+    """P(AI voice) over time, with the Green/Amber/Red decision bands behind it.
+
+    `overlay` paints a watermark across the plot when the scores are not a real
+    trained head's output. Returns None when there is nothing to plot.
+    """
     idx_to_t = {w["window_idx"]: w["t"] - t0 for w in windows if w["window_idx"] is not None}
     pts = sorted(
         ((idx_to_t.get(int(k), float(v.get("timestamp", t0)) - t0), float(v["score"]))
@@ -236,22 +370,17 @@ def risk_chart(windows, scores, t0):
         return None
 
     xs, ys = [p[0] for p in pts], [p[1] for p in pts]
+    custom = [[f"{y:.3f}", band_word(y)] for y in ys]
     fig = go.Figure()
-    for lo, hi, colour in ((0, AMBER_AT, GOOD), (AMBER_AT, RED_AT, WARNING), (RED_AT, 1, CRITICAL)):
-        fig.add_hrect(y0=lo, y1=hi, fillcolor=colour, opacity=0.07,
-                      line_width=0, layer="below")
-    for y, label, colour in ((AMBER_AT, "Amber", WARNING), (RED_AT, "Red", CRITICAL)):
-        fig.add_hline(y=y, line=dict(color=colour, width=1, dash="dot"),
-                      annotation_text=label, annotation_position="right",
-                      annotation_font=dict(color=colour, size=11))
-
+    _risk_bands(fig, overlay)
     fig.add_trace(go.Scatter(
-        x=xs, y=ys, mode="lines+markers", name="P(AI voice)",
+        x=xs, y=ys, mode="lines+markers", name="P(AI voice)", customdata=custom,
         line=dict(color=SERIES_1, width=2),
         marker=dict(size=8, color=SERIES_1, line=dict(color="rgba(255,255,255,0.85)", width=2)),
-        hovertemplate="%{x:.1f}s &nbsp; P(AI) %{y:.1%}<extra></extra>",
+        hovertemplate=("%{x:.1f}s &nbsp; <b>%{y:.0%}</b> — %{customdata[1]}"
+                       " &nbsp;(raw %{customdata[0]})<extra></extra>"),
     ))
-    fig.update_yaxes(range=[0, 1], tickformat=".0%")
+    fig.update_layout(showlegend=False)
     return base_layout(fig, 320, "P(AI voice)")
 
 
@@ -289,29 +418,24 @@ BAND_STYLE = {
 }
 
 
-def upload_chart(times, raw, smoothed):
-    """Per-window risk over the clip, with the decision bands behind it."""
+def upload_chart(times, raw, smoothed, overlay=None):
+    """Per-window risk over the clip, with the decision bands behind it.
+    `overlay` watermarks the plot when the head is mock / untrained."""
     fig = go.Figure()
-    for lo, hi, colour in ((0, AMBER_AT, GOOD), (AMBER_AT, RED_AT, WARNING),
-                           (RED_AT, 1, CRITICAL)):
-        fig.add_hrect(y0=lo, y1=hi, fillcolor=colour, opacity=0.07,
-                      line_width=0, layer="below")
-    for y, label, colour in ((AMBER_AT, "Amber", WARNING), (RED_AT, "Red", CRITICAL)):
-        fig.add_hline(y=y, line=dict(color=colour, width=1, dash="dot"),
-                      annotation_text=label, annotation_position="right",
-                      annotation_font=dict(color=colour, size=11))
-
+    _risk_bands(fig, overlay)
     fig.add_trace(go.Scatter(
         x=times, y=raw, mode="markers", name="Per-window score",
+        customdata=[band_word(v) for v in raw],
         marker=dict(size=6, color=MUTED, opacity=0.65),
-        hovertemplate="%{x:.1f}s &nbsp; raw %{y:.3f}<extra></extra>",
+        hovertemplate="%{x:.1f}s &nbsp; raw %{y:.3f} — %{customdata}<extra></extra>",
     ))
     fig.add_trace(go.Scatter(
         x=times, y=smoothed, mode="lines", name="Smoothed (5-window mean)",
+        customdata=[[f"{v:.3f}", band_word(v)] for v in smoothed],
         line=dict(color=SERIES_1, width=2.5),
-        hovertemplate="%{x:.1f}s &nbsp; P(AI) %{y:.1%}<extra></extra>",
+        hovertemplate=("%{x:.1f}s &nbsp; <b>%{y:.0%}</b> — %{customdata[1]}"
+                       " &nbsp;(raw %{customdata[0]})<extra></extra>"),
     ))
-    fig.update_yaxes(range=[0, 1], tickformat=".0%")
     fig = base_layout(fig, 360, "P(AI voice)")
     fig.update_xaxes(title_text="Window start (seconds into clip)")
     return fig
@@ -353,8 +477,14 @@ def render_upload_result(result, live=False, slots=None):
     times, raw, smoothed, bands = _series_from_scores(result["scores"])
     band = bands[-1] if bands else "GREEN"
     latest = raw[-1] if raw else None
+    synthetic = bool(result.get("synthetic"))
+    ovl = SYNTH_WATERMARK if synthetic else None
+    smoothed_latest = smoothed[-1] if smoothed else None
+    _no_bar = {"displayModeBar": False}
 
     if slots is None:
+        st.markdown(score_readout(smoothed_latest, synthetic=synthetic),
+                    unsafe_allow_html=True)
         st.markdown(band_card(band, result["label"], latest), unsafe_allow_html=True)
         c1, c2, c3, c4 = st.columns(4)
         c1.metric("Windows scored", len(raw))
@@ -362,13 +492,16 @@ def render_upload_result(result, live=False, slots=None):
         c3.metric("Max", f"{np.max(raw):.1%}" if raw else "—")
         c4.metric("% windows ≥ red", f"{np.mean(np.array(raw) >= RED_AT):.0%}" if raw else "—")
         if raw:
-            st.plotly_chart(upload_chart(times, raw, smoothed),
-                            use_container_width=True,
+            st.plotly_chart(upload_chart(times, raw, smoothed, overlay=ovl),
+                            use_container_width=True, config=_no_bar,
                             key=f"chart_{result['call_id']}_static")
+            st.markdown(band_legend_md(), unsafe_allow_html=True)
         return band
 
-    slots["band"].markdown(band_card(band, result["label"], latest),
-                           unsafe_allow_html=True)
+    with slots["band"].container():
+        st.markdown(score_readout(smoothed_latest, synthetic=synthetic),
+                    unsafe_allow_html=True)
+        st.markdown(band_card(band, result["label"], latest), unsafe_allow_html=True)
     with slots["metrics"].container():
         c1, c2, c3, c4 = st.columns(4)
         c1.metric("Windows scored", f"{len(raw)} / {result['expected_windows']}")
@@ -377,9 +510,14 @@ def render_upload_result(result, live=False, slots=None):
         c4.metric("% windows ≥ red",
                   f"{np.mean(np.array(raw) >= RED_AT):.0%}" if raw else "—")
     if raw:
-        slots["chart"].plotly_chart(
-            upload_chart(times, raw, smoothed), use_container_width=True,
-            key=f"chart_{result['call_id']}_{len(raw)}")
+        # Stable key: same chart element across frames, so new points ease in
+        # instead of the whole plot flashing on every Streamlit rerun.
+        with slots["chart"].container():
+            st.plotly_chart(
+                upload_chart(times, raw, smoothed, overlay=ovl),
+                use_container_width=True, config=_no_bar,
+                key=f"chart_{result['call_id']}_live")
+            st.markdown(band_legend_md(), unsafe_allow_html=True)
     return band
 
 
@@ -430,6 +568,8 @@ def run_upload_stream(uploaded_file, model_key, model_label):
         "duration_s": started.get("duration_s"),
         "amber": AMBER_AT,
         "red": RED_AT,
+        # Watermark the timeline if this head is untrained / mock.
+        "synthetic": is_synthetic_head(),
         "scores": {},
     }
 
@@ -536,6 +676,11 @@ with tab1:
                 "and passed with `--ckpt`, so no mock number is ever shown as a verdict."
             )
 
+        # One /api/status read per refresh: watermark the timeline if the head
+        # that produced these scores is untrained. Only matters when a chart
+        # would render at all.
+        synthetic = scoring_available and is_synthetic_head()
+
         st.link_button("🎤  Open microphone capture", f"{server_url}/mic")
         st.caption("Opens in a new tab — Chrome or Edge, on this machine. "
                    "Press Start capture there, then approve the pairing code below.")
@@ -586,10 +731,16 @@ with tab1:
                     m4.metric("Risk band", "—")
 
                 if scoring_available:
-                    st.markdown("**Risk timeline**")
-                    fig = risk_chart(windows, scores, t0)
+                    st.markdown("**Risk timeline — P(AI voice) per 4s window**")
+                    st.markdown(score_readout(latest, synthetic=synthetic),
+                                unsafe_allow_html=True)
+                    fig = risk_chart(windows, scores, t0,
+                                     overlay=SYNTH_WATERMARK if synthetic else None)
                     if fig:
-                        st.plotly_chart(fig, use_container_width=True, key=f"risk_{call_id}")
+                        st.plotly_chart(fig, use_container_width=True,
+                                        key=f"risk_{call_id}",
+                                        config={"displayModeBar": False})
+                        st.markdown(band_legend_md(), unsafe_allow_html=True)
                         st.caption(
                             f"Thresholds: Amber ≥ {AMBER_AT:.0%}, Red ≥ {RED_AT:.0%}. "
                             "Provisional — set on the clean benchmark, not yet recalibrated "
@@ -664,6 +815,9 @@ with tab2:
 # TAB 3: CALL HISTORY
 with tab3:
     st.header("📋 Call History")
+    st.warning("**Illustrative sample — not real calls.** History persistence "
+               "isn't wired up yet; these rows are placeholder layout, not model "
+               "output.")
     history_data = [
         {"Caller": "+1 (508) 799-XXXX", "Duration": "0:34", "Mean Score": 0.32, "Result": "✓ REAL", "Time": "2026-08-31 14:23"},
         {"Caller": "+1 (650) 253-XXXX", "Duration": "2:12", "Mean Score": 0.87, "Result": "🚨 AI", "Time": "2026-08-31 13:45"},
