@@ -90,7 +90,7 @@ Consent gate is real: `Session.push_audio()` discards every chunk until state is
 - **server.py** — `SonicServer`: `websocket_handler`, `http_*_handler` (approve/end-call/telemetry/models/upload/status), `_on_new_call`, `_on_pairing_approved`, `_on_scores_ready`, `_broadcast`, `_adaptive_vad_floor`, `run`, `main`.
 - **session.py** — `Session` + `CallState`/`AuditEntry`/`CallMetadata`: `request_consent`, `push_audio` (consent gate), `get_pending_windows`, `record_score`, `end_call`, `save_audit`, `telemetry`, `to_dict`.
 - **engine.py** — `ScoringEngine`: `ensure_model`, `preload`, `model_catalogue`, `_collect_batch`, `_embed_windows`, `_score_windows`, `_head_forward`, `add_session`, `remove_session`, `run`, `get_stats`.
-- **checkpoint.py** — `StandardisedHead` (`forward`), `load_checkpoint`. Bridges to `demo/score_file.py`.
+- **checkpoint.py** — `StandardisedHead` (`forward`), `load_checkpoint`. Loads the torch checkpoint **directly** and bakes mu/sd into the module. It does *not* bridge to `demo/score_file.py` any more — there is no `_module()` and no `checkpoint_available` here; that one lives in `demo/score_file.py:121` for the Streamlit demo.
 - **frontend.py** — wav2vec2 wrapper. `load`, `embed`.
 - **models.py** — checkpoint resolution. `resolve_ckpt`, `key_for_path`, `catalogue`.
 - **ringbuffer.py** — `RingBuffer` (capacity 64000 @ 16kHz): `push`, `get_emitted_windows`, `reset`, `stats`.
@@ -118,7 +118,7 @@ Consent gate is real: `Session.push_audio()` discards every chunk until state is
 - **`score_file.py` exists 3×**: `src/`, `demo/`, `uidemo/.../`. `realtime/checkpoint.py` loads the **`demo/`** one by path. `src/` version is the offline path. Which one "real mode" officially binds to is unsettled — check before assuming.
 - **`make_codec.py` exists 2×**: repo root and `src/`. Same 3 functions (`have_ffmpeg`, `transcode_g711`, `main`).
 - **`extract_embeddings.py`**: root copy is canonical; `src/` copy is stale but still on disk. CLAUDE.md/README still describe the old `src/` layout.
-- **Band thresholds disagree 3 ways**: realtime `0.35/0.65`, `demo/app.py` slider defaults `0.10/0.90`, `demo/test_suryansh.py` `0.45/0.70`.
+- **Band thresholds**: `realtime/thresholds.py` is now the single source (`0.35/0.65`), pinned across `miccapture.py`, `website/script.js` and the extension by `realtime/tests/test_thresholds.py`. The other numbers are *not* competing definitions: `demo/app.py` and `realtime/live_ui.py:185` expose Streamlit **sliders** an operator moves at runtime (defaults `0.10/0.90`), and `demo/test_suryansh.py` `0.45/0.70` is a test fixture. Do not "reconcile" those into the production bands.
 - **`uidemo/SONIX_Suryansh_Demo_UI_v9/`** is a frozen older copy of `demo/` — 11 near-identical files. Ignore unless doing UI archaeology.
 - **`demo/test_suryansh.py`** collects zero pytest tests (asserts run at import). Run it directly: `python demo/test_suryansh.py`.
 - **No `head.pt` in any branch** — gitignored, file-transfer only. Server falls back to mock and reports `scoring_available=False`.

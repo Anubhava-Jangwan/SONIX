@@ -28,6 +28,35 @@ logger = logging.getLogger(__name__)
 # clip we demo and still bounded.
 MAX_UPLOAD_BYTES = 256 * 1024 * 1024
 
+# What a browser's AudioContext can plausibly report. Anything else is either a
+# typo or an attempt to make resample() allocate.
+ALLOWED_SAMPLE_RATES = frozenset({8000, 11025, 16000, 22050, 24000,
+                                  32000, 44100, 48000, 96000})
+
+# Telemetry rows per request. The dashboard asks for 240; the cap stops a single
+# query from serialising an entire long call.
+MAX_TELEMETRY_LIMIT = 2000
+
+
+def _origin_allowed(request, ws_port: int) -> bool:
+    """True if this request came from our own page, or carries no Origin.
+
+    Non-browser clients (curl, the Asterisk bridge, tests) send no Origin and
+    are unaffected. A browser always sends one, so this is what stops a random
+    page the operator visited from driving the local server -- WebSockets are
+    exempt from the same-origin policy, and a multipart POST is not preflighted,
+    so neither is blocked by anything else.
+    """
+    origin = request.headers.get("Origin")
+    if not origin:
+        return True
+    allowed = {f"http://localhost:{ws_port}", f"http://127.0.0.1:{ws_port}",
+               f"https://localhost:{ws_port}", f"https://127.0.0.1:{ws_port}"}
+    extra = os.environ.get("SONIX_ALLOWED_ORIGINS", "")
+    allowed |= {o.strip() for o in extra.split(",") if o.strip()}
+    # The Chrome extension talks to the server from its own origin.
+    return origin in allowed or origin.startswith("chrome-extension://")
+
 
 
 
@@ -185,6 +214,11 @@ class SonicServer:
 
     async def websocket_handler(self, request):
         """WebSocket endpoint for live UI."""
+        if not _origin_allowed(request, self.ws_port):
+            logger.warning("rejected /ws from origin %r",
+                           request.headers.get("Origin"))
+            return web.Response(status=403, text="origin not allowed")
+
         ws = web.WebSocketResponse()
         await ws.prepare(request)
         self.ws_clients.add(ws)
@@ -205,13 +239,31 @@ class SonicServer:
                     try:
                         data = json.loads(msg.data)
 
-                        if data.get("type") == "approve_pairing":
-                            call_id = data.get("call_id")
-                            await self._on_pairing_approved(call_id)
-
-                        elif data.get("type") == "end_call":
-                            call_id = data.get("call_id")
-                            await self._on_call_ended(call_id)
+                        # NOTE: there is deliberately no "approve_pairing" here.
+                        # Consent is granted ONLY over POST /api/approve. The WS
+                        # branch that used to exist took a call_id straight off
+                        # the wire with no ownership check and never asked for
+                        # the pairing code -- and /ws has no origin check, so any
+                        # page the operator visited could approve consent on a
+                        # live session. No client ever used it: live_ui.py:715
+                        # and website/script.js both POST /api/approve.
+                        if data.get("type") == "end_call":
+                            # Only the call this socket started. Every real
+                            # caller (script.js, miccapture.py, extension
+                            # offscreen.js) already sends its own call_id, so
+                            # this changes no legitimate flow.
+                            owned = self.ws_calls.get(ws)
+                            asked = data.get("call_id")
+                            if owned and (asked is None or asked == owned):
+                                await self._on_call_ended(owned)
+                            else:
+                                logger.warning(
+                                    "refused end_call for %r from a socket owning %r",
+                                    asked, owned)
+                                await ws.send_str(json.dumps({
+                                    "type": "error",
+                                    "message": "end_call is only allowed for this connection's own call",
+                                }))
 
                         elif data.get("type") == "start_mic_call":
                             await self._start_mic_call(ws, data)
@@ -224,7 +276,15 @@ class SonicServer:
                             }))
 
                     except json.JSONDecodeError:
-                        logger.warning(f"Invalid JSON: {msg.data}")
+                        logger.warning("Invalid JSON on /ws (%d bytes)", len(msg.data or ""))
+                    except Exception:
+                        # A bad field (e.g. sample_rate="x") used to raise out of
+                        # `async for` and kill the whole socket. Report and keep
+                        # the connection alive instead.
+                        logger.exception("WS message handler failed")
+                        await ws.send_str(json.dumps({
+                            "type": "error", "message": "could not process that message",
+                        }))
 
                 elif msg.type == web.WSMsgType.BINARY:
                     # Raw int16 PCM from the browser microphone.
@@ -275,7 +335,23 @@ class SonicServer:
 
         call_id = f"mic_{datetime.now().strftime('%Y%m%dT%H%M%S')}"
         pairing_code = self.pairing_manager.generate()
-        sample_rate = int(data.get("sample_rate") or TARGET_SR)
+
+        # Browsers report ctx.sampleRate, which is one of a small known set.
+        # Unvalidated, int("x") raised straight out of the message loop and
+        # killed the socket, and a huge value reached resample() as an
+        # allocation size.
+        raw_sr = data.get("sample_rate") or TARGET_SR
+        try:
+            sample_rate = int(raw_sr)
+        except (TypeError, ValueError):
+            sample_rate = None
+        if sample_rate not in ALLOWED_SAMPLE_RATES:
+            await ws.send_str(json.dumps({
+                "type": "error",
+                "message": f"unsupported sample_rate {raw_sr!r}; "
+                           f"expected one of {sorted(ALLOWED_SAMPLE_RATES)}",
+            }))
+            return
 
         source = MicSource(caller=data.get("caller", "browser-mic"), sample_rate=sample_rate)
         session = Session(call_id, source, pairing_code=pairing_code,
@@ -321,6 +397,14 @@ class SonicServer:
         except Exception:
             return web.json_response({"error": "expected JSON body"}, status=400)
 
+        # Consent approval is the one privileged action in this server. There is
+        # no login, so an origin check is the available control: it stops a page
+        # the operator happens to have open from silently approving a live call.
+        # The dashboard legitimately approves calls it did not create
+        # (live_ui.py:715), so ownership binding would be wrong here.
+        if not _origin_allowed(request, self.ws_port):
+            return web.json_response({"error": "origin not allowed"}, status=403)
+
         call_id = data.get("call_id")
         session = self.sessions.get(call_id)
         if session is None:
@@ -336,6 +420,9 @@ class SonicServer:
         except Exception:
             return web.json_response({"error": "expected JSON body"}, status=400)
 
+        if not _origin_allowed(request, self.ws_port):
+            return web.json_response({"error": "origin not allowed"}, status=403)
+
         call_id = data.get("call_id")
         if call_id not in self.sessions:
             return web.json_response({"error": f"unknown call {call_id}"}, status=404)
@@ -346,7 +433,16 @@ class SonicServer:
     async def http_telemetry_handler(self, request):
         """Per-call window telemetry for the dashboard chart."""
         wanted = request.query.get("call_id")
-        limit = int(request.query.get("limit", 240))
+        # int() on a non-numeric query string raised ValueError, which aiohttp
+        # turned into a 500 with a traceback. Bound it too, so one query cannot
+        # serialise an entire long call.
+        raw_limit = request.query.get("limit", 240)
+        try:
+            limit = int(raw_limit)
+        except (TypeError, ValueError):
+            return web.json_response(
+                {"error": "limit must be an integer"}, status=400)
+        limit = max(1, min(limit, MAX_TELEMETRY_LIMIT))
 
         calls = {
             cid: s.telemetry(limit=limit)
@@ -444,6 +540,11 @@ class SonicServer:
         """
         temp_path = None
         try:
+            # multipart/form-data is a "simple request": no CORS preflight, so
+            # nothing else stops a cross-origin page from queueing inference.
+            if not _origin_allowed(request, self.ws_port):
+                return web.json_response({"error": "origin not allowed"}, status=403)
+
             data = await request.post()
             file_field = data.get('file')
 
@@ -525,7 +626,14 @@ class SonicServer:
             await self.engine.add_session(session)
             self.sessions[call_id] = session
 
-            feed = asyncio.create_task(self._feed_upload(call_id, session, source))
+            # The 20ms-per-chunk pacing exists so the STREAMING path can watch
+            # the risk line build window by window. On the blocking path the
+            # caller only wants the final numbers, and that pacing is ~1s of
+            # pure sleep on a 25s clip (50 chunks x 20ms) before inference even
+            # starts. Feed it as fast as the loop allows instead.
+            feed = asyncio.create_task(
+                self._feed_upload(call_id, session, source,
+                                  pace=0.0 if wait else 0.02))
 
             if not wait:
                 return web.json_response({
@@ -539,12 +647,35 @@ class SonicServer:
                 })
 
             # Blocking path: wait for the feed, then for scoring to drain.
+            #
+            # expected_windows counts what the ring buffer EMITS. The silence
+            # gate then drops some of those, so len(scores) can never reach it
+            # whenever any window is gated -- and the old condition never broke
+            # on a drained queue either (it tested `not pending_windows`, then
+            # fell through to sleep because the inner test still failed). Every
+            # upload with a quiet lead-in therefore sat out the full 60s.
+            # Exit as soon as the queue has drained and no new score has landed
+            # for a short grace period, which lets an in-flight batch finish.
             await feed
-            for _ in range(600):                       # 60s ceiling
-                if len(session.scores) >= expected_windows or not session.pending_windows:
-                    if len(session.scores) >= expected_windows:
+            DEADLINE, GRACE, TICK = 60.0, 0.5, 0.1
+            waited = settled = 0.0
+            last_seen = -1
+            while waited < DEADLINE:
+                n = len(session.scores)
+                if n >= expected_windows:
+                    break
+                if n != last_seen:
+                    last_seen, settled = n, 0.0
+                elif not session.pending_windows:
+                    settled += TICK
+                    if settled >= GRACE:
                         break
-                await asyncio.sleep(0.1)
+                await asyncio.sleep(TICK)
+                waited += TICK
+
+            gated = sum(1 for w in session.window_log if not w.get("vad_passed"))
+            logger.info("[%s] upload done: %d scored, %d gated, %d expected, %.1fs wait",
+                        call_id, len(session.scores), gated, expected_windows, waited)
             await self._on_call_ended(call_id)
 
             scores_list = [s["score"] for s in session.scores.values()]
@@ -554,6 +685,10 @@ class SonicServer:
                 "model": model_key,
                 "windows_scored": len(session.scores),
                 "expected_windows": int(expected_windows),
+                # Without this the UI shows "32 / 42" and reads as a failure,
+                # when 10 windows were correctly dropped as silence.
+                "windows_gated": int(gated),
+                "vad": vad_note,
                 "summary": {
                     "mean_score": float(np.mean(scores_list)) if scores_list else None,
                     "max_score": float(np.max(scores_list)) if scores_list else None,

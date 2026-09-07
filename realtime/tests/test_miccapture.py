@@ -3,7 +3,11 @@
 import re
 
 from realtime.miccapture import PAGE
-from realtime.live_ui import AMBER_AT, RED_AT
+# Was: `from realtime.live_ui import AMBER_AT, RED_AT`. Those are Streamlit
+# sliders (live_ui.py:185) defaulting to 0.10/0.90, not the production bands --
+# so this test compared the mic page's 0.35 against 0.10, and importing it
+# dragged Streamlit into the test run. realtime/thresholds.py is the one source.
+from realtime.thresholds import AMBER_AT, RED_AT
 
 
 def _js_const(name):
@@ -17,10 +21,21 @@ def test_thresholds_match_dashboard():
     assert _js_const("RED_AT") == RED_AT
 
 
-def test_page_has_band_and_spectrogram():
-    for needed in ('id="verdict"', 'id="spec"', "getByteFrequencyData",
+def test_page_has_band_and_risk_chart():
+    # Was `test_page_has_band_and_spectrogram`, asserting id="spec" and
+    # getByteFrequencyData. The spectrogram was deliberately removed --
+    # miccapture.py:171 says so: "the 'danger level' plot that replaced the
+    # spectrogram". The page now draws canvas#risk, and getByteFrequencyData
+    # appears nowhere in it. Pin what is actually there.
+    for needed in ('id="verdict"', 'id="risk"', "function drawRisk",
                    'm.type === "scores"', "scoring_available"):
         assert needed in PAGE, f"missing: {needed}"
+
+
+def test_page_has_no_stale_spectrogram_hooks():
+    """If the spectrogram ever comes back it should come back with its test."""
+    for gone in ('id="spec"', "getByteFrequencyData"):
+        assert gone not in PAGE, f"unexpected {gone} -- update the chart tests"
 
 
 def test_verdict_is_gated_on_scoring_available():
@@ -31,6 +46,7 @@ def test_verdict_is_gated_on_scoring_available():
 
 if __name__ == "__main__":
     test_thresholds_match_dashboard()
-    test_page_has_band_and_spectrogram()
+    test_page_has_band_and_risk_chart()
+    test_page_has_no_stale_spectrogram_hooks()
     test_verdict_is_gated_on_scoring_available()
     print("ok")

@@ -482,6 +482,10 @@ code {
 .wstrip-wrap-label { font-size: 11px; letter-spacing: .06em; text-transform: uppercase; color: var(--ink-3); margin: 0 0 8px; }
 #riskCanvas { width: 100%; height: 320px; display: block; border-radius: 6px; background: var(--surface-2); }
 @media (max-width: 640px) { #riskCanvas { height: 240px; } }
+/* Upload result timeline — same chart, shorter because the card is wider. */
+.res-canvas-wrap { margin-top: 14px; }
+#resCanvas { width: 100%; height: 220px; display: block; border-radius: 6px; background: var(--surface-2); }
+@media (max-width: 640px) { #resCanvas { height: 180px; } }
 .legend { display: grid; gap: 8px; align-content: start; }
 .legend-row {
   display: flex; justify-content: space-between; gap: 10px; font-size: 12.5px;

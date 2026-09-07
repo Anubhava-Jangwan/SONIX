@@ -1,8 +1,12 @@
 # SONIX — Phase 1 Audit
 
-Scope: `realtime/`, `website/`. Read-only pass. **No code changed.**
-Every finding below cites a file and line. Anything I could not prove from the
-code is labelled POTENTIAL or HARDENING, never CONFIRMED.
+Scope: `realtime/`, `website/`. Every finding below cites a file and line.
+Anything I could not prove from the code is labelled POTENTIAL or HARDENING,
+never CONFIRMED.
+
+> **Status:** the audit was a read-only pass; Phase 2a/2b has since landed.
+> S-1, S-2, S-3, S-4 and S-6 are fixed — see §8 at the end for what changed and
+> what deliberately did not. S-5 and S-7 remain open.
 
 Not verified on this machine: the test suite. `pytest` is unavailable in the
 audit environment, so the "before" baseline in §7 must be produced on the dev
@@ -228,24 +232,40 @@ they agree.
 
 ---
 
-## 5. Open bug, not yet root-caused
+## 5. "0 / N windows scored" — root-caused, two separate defects
 
-Upload of `output.wav` reports **0 / 42 windows scored**. Two candidates remain
-live and one log line separates them:
+Both are fixed. Neither was the warm-up race originally suspected.
 
-```
-[upload_...] upload feed finished (N windows emitted)     server.py:423
-```
+**Defect A — the silence gate could sit above the signal.**
+`_adaptive_vad_floor` (server.py:381) clamped its lower bound to `0.0006`. For a
+clip below roughly -65 dBFS that lands *above* the clip's own speech level, so
+every frame fails the energy test. Measured on `testcall.wav` attenuated to that
+level: p90 frame RMS `0.000564`, clamped floor `0.0006`, **0/41 windows**. Fixed
+by capping the floor at half the measured speech level; after, 41/41. Safe
+because the ZCR ceiling rejects dead audio independently of energy (digital
+silence `zcr=0.000`, dither and room tone `zcr≈0.50`, all still rejected with
+the energy gate fully open).
 
-`N = 0` → the silence gate rejected everything (`_adaptive_vad_floor`,
-server.py:381, clamps its floor at a `0.0006` minimum, which a very quiet or
-TTS-padded clip can still fail). `N = 42` with 0 scored → the scorer side, most
-likely the warm-up race: `/api/models` reported `"warming": true`, and the
-upload path returns immediately (server.py:519) while the ~300M-param front-end
-is still loading.
+**Defect B — `engine._head_forward` used `torch` without importing it.**
+`realtime/engine.py` imported asyncio, logging, pathlib, typing, numpy and the
+model registry — not torch — yet `_head_forward` (line 250) called
+`torch.no_grad()`, `torch.from_numpy()`, `torch.softmax()` and `torch.sigmoid()`.
+Every real batch raised `NameError`. Mock mode returns at `_score_windows`
+line 228, before reaching it, so the entire test suite stayed green while real
+scoring had never worked.
 
-This should be closed before any refactor — a refactor on top of an
-unexplained failure makes both harder to diagnose.
+**Defect B was invisible because of a third problem:** `ScoringEngine.run()`
+caught only `asyncio.CancelledError`, so that `NameError` escaped the `while`
+loop and killed the scoring task outright. The server kept serving, sessions
+kept accepting audio, and uploads kept reporting `0 / N` with nothing logged.
+`run()` now catches per-batch failures, logs them with a traceback, counts them
+in `failed_batches`, and continues — so the next failure of this class is
+visible in `/api/status` instead of silent.
+
+Diagnosis used `realtime/diagnose_upload.py` (new): it runs
+`WavFileSource → RingBuffer → adaptive floor → VAD` against a file with no
+server involved. On the user's `output.wav`: 24.64s, 42 windows, **32 passed the
+gate** — which ruled out the VAD and pointed at the scorer.
 
 ---
 
@@ -274,3 +294,41 @@ python -m pytest realtime/tests -q
 Lane note (`CLAUDE.md`): `realtime/` UI, `live_ui.py` and `miccapture.py` are
 Suryansh's; ML under `src/` is Yugal's. Phases 3, 4 and 6 cross those lanes and
 need their sign-off before landing.
+
+---
+
+## 8. Phase 2a / 2b — what landed
+
+| ID | Fix | File |
+|---|---|---|
+| S-1 | WS `approve_pairing` branch **deleted**, not hardened — no client ever used it (`live_ui.py:715` and `script.js` both POST `/api/approve`). Consent now has exactly one entry point. | `server.py` |
+| S-1 | WS `end_call` bound to `self.ws_calls[ws]`; a socket can only end its own call. Every real caller already sent its own id, so no flow changed. | `server.py` |
+| S-1/S-6 | `_origin_allowed()` on `/ws`, `/api/approve`, `/api/end-call`, `/api/score-file`. Requests with no `Origin` (curl, Asterisk, tests) still pass; `chrome-extension://` allowed; extra origins via `SONIX_ALLOWED_ORIGINS`. | `server.py` |
+| S-2 | `secrets.randbelow` replaces `random.randint`; codes are recorded, expire, are single-use, and burn a 5-attempt budget. `check()` uses `compare_digest`. | `pairing.py` |
+| S-3 | `limit` parsed safely (400, not a 500 traceback) and clamped to `MAX_TELEMETRY_LIMIT`. | `server.py` |
+| S-4 | `sample_rate` validated against `ALLOWED_SAMPLE_RATES`; the message loop now catches non-JSON errors and replies instead of dying. | `server.py` |
+| 2b | `realtime/consent.py` — 35 bytes, docstring only, zero importers repo-wide. **Delete pending** (`rm` was blocked from the audit sandbox). | — |
+| 2b | `realtime/thresholds.py` — one definition of 0.35/0.65 plus `band_for()`. | new |
+| 2b | `test_thresholds.py` pins the mic page, website and extension against it. | new |
+| VAD | `_adaptive_vad_floor` no longer returns a floor above the clip's own speech level — the cause of "0 / N windows scored". | `server.py` |
+
+### Deliberately NOT done
+
+- **Telemetry `call_id` scoping (part of S-3).** `live_ui.py` is an operator
+  dashboard that legitimately reads calls it did not create. Scoping per socket
+  would break it. Needs a real operator identity first.
+- **Ownership binding on `POST /api/approve`.** Same reason — `live_ui.py:715`
+  approves third-party calls by design. The origin check is the control that
+  fits the actual threat (a page the operator has open), without breaking the
+  dashboard.
+- **S-5, S-7.** Broadcast scoping touches the dashboard's data flow; rate
+  limiting needs load measurement first. Both still open.
+
+### Verification
+
+`realtime/tests/test_adaptive_vad_floor.py` and `test_thresholds.py` are new;
+`test_miccapture.py` now imports `realtime.thresholds` instead of `live_ui`'s
+sliders. All touched files pass `py_compile`, and 40 assertions covering S-1
+through S-6 and the band boundaries were run directly. **`pytest` itself was not
+available in the audit environment — run the suite on the dev box before
+merging.**

@@ -64,6 +64,7 @@ class ScoringEngine:
 
         self.total_windows_scored = 0
         self.total_batches = 0
+        self.failed_batches = 0
 
         # The front-end is ~300M parameters and takes tens of seconds to load.
         # Doing that lazily inside the first scoring batch made the first upload
@@ -247,6 +248,13 @@ class ScoringEngine:
 
     def _head_forward(self, head, embeddings: np.ndarray) -> np.ndarray:
         """Synchronous head inference. Called via to_thread, never inline."""
+        # Imported here, not at module scope: mock mode must keep working on a
+        # machine with no torch installed (realtime/mock.py is deliberately
+        # torch-free), and this function is the only place in the file that
+        # needs it. It was previously used without being imported at all, which
+        # raised NameError on the first real batch -- see the guard in run().
+        import torch
+
         with torch.no_grad():
             xb = torch.from_numpy(np.ascontiguousarray(embeddings)).float().to(self.device)
             logits = head(xb)
@@ -285,8 +293,26 @@ class ScoringEngine:
                     continue
 
                 call_ids, window_indices, model_keys, windows = result
-                embeddings = await self._embed_windows(windows)
-                scores = await self._score_windows(embeddings, model_keys)
+
+                # Anything raised below used to escape the while loop and kill
+                # this task outright. The server kept serving, sessions kept
+                # accepting audio, and every upload reported "0 / N windows
+                # scored" with nothing in the log explaining it -- which is
+                # exactly how a missing `import torch` in _head_forward stayed
+                # invisible. Log it, drop the batch, keep scoring.
+                try:
+                    embeddings = await self._embed_windows(windows)
+                    scores = await self._score_windows(embeddings, model_keys)
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    self.failed_batches += 1
+                    logger.exception(
+                        "Engine: batch of %d window(s) failed for call(s) %s; "
+                        "dropping it and continuing",
+                        len(windows), sorted(set(call_ids)))
+                    await asyncio.sleep(self.batch_interval)
+                    continue
 
                 for i, call_id in enumerate(call_ids):
                     session = self.sessions.get(call_id)
@@ -327,6 +353,7 @@ class ScoringEngine:
         """Return engine statistics."""
         return {
             "total_batches": self.total_batches,
+            "failed_batches": self.failed_batches,
             "total_windows_scored": self.total_windows_scored,
             "active_calls": len(self.sessions),
             "loaded_models": sorted(self.heads.keys()),

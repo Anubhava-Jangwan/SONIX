@@ -21,6 +21,68 @@
   const $ = (sel, root = document) => root.querySelector(sel);
   const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
 
+  /* ------------------------------------------------- risk timeline chart
+     One implementation, drawn by both the live capture widget and the upload
+     result. It was previously a closure inside initLiveCapture bound to
+     #riskCanvas, so the upload panel had only the thin colour strip.
+
+     `pts` is [[index, score], ...] already sorted. `xLabel` is honest about
+     what the axis is: for uploads the indices are SCORED windows, so windows
+     dropped by the silence gate leave no gap — it is window order, not
+     wall-clock time. */
+  function drawRiskChart(canvas, pts, xLabel = "time →") {
+    if (!canvas) return;
+    const dpr = window.devicePixelRatio || 1;
+    const cssW = canvas.clientWidth || 460, cssH = canvas.clientHeight || 320;
+    canvas.width = cssW * dpr; canvas.height = cssH * dpr;
+    const g = canvas.getContext("2d");
+    g.setTransform(dpr, 0, 0, dpr, 0, 0);
+    g.clearRect(0, 0, cssW, cssH);
+
+    const cs = getComputedStyle(document.documentElement);
+    const good = cs.getPropertyValue("--good").trim() || "#16a34a";
+    const warn = cs.getPropertyValue("--warn").trim() || "#d97706";
+    const crit = cs.getPropertyValue("--crit").trim() || "#dc2626";
+    const ink3 = cs.getPropertyValue("--ink-3").trim() || "#8a8f98";
+    const ink = cs.getPropertyValue("--ink").trim() || "#16171a";
+
+    const padL = 36, padR = 12, padT = 10, padB = 20;
+    const w = cssW - padL - padR, h = cssH - padT - padB;
+    const maxIdx = pts.length ? pts[pts.length - 1][0] : 0;
+    const spanIdx = Math.max(20, maxIdx);
+    const X = (i) => padL + (spanIdx ? (i / spanIdx) * w : 0);
+    const Y = (s) => padT + (1 - s) * h;
+
+    const bands = [[0, AMBER_AT, good], [AMBER_AT, RED_AT, warn], [RED_AT, 1, crit]];
+    g.globalAlpha = 0.10;
+    for (const [lo, hi, col] of bands) {
+      g.fillStyle = col;
+      g.fillRect(padL, Y(hi), w, Y(lo) - Y(hi));
+    }
+    g.globalAlpha = 1;
+
+    g.lineWidth = 1; g.font = "10px system-ui"; g.setLineDash([4, 3]);
+    for (const [y, col, txt] of [[AMBER_AT, warn, "Amber"], [RED_AT, crit, "Red"]]) {
+      g.strokeStyle = col; g.beginPath(); g.moveTo(padL, Y(y)); g.lineTo(padL + w, Y(y)); g.stroke();
+      g.fillStyle = col; g.fillText(txt, padL + w - 32, Y(y) - 3);
+    }
+    g.setLineDash([]);
+
+    g.fillStyle = ink3;
+    g.fillText("100%", 2, Y(1) + 3);
+    g.fillText("50%", 6, Y(0.5) + 3);
+    g.fillText("0%", 12, Y(0) + 3);
+    g.fillText(xLabel, padL, cssH - 5);
+
+    if (pts.length) {
+      g.strokeStyle = ink; g.lineWidth = 2; g.beginPath();
+      pts.forEach(([i, s], k) => { const x = X(i), y = Y(s); k ? g.lineTo(x, y) : g.moveTo(x, y); });
+      g.stroke();
+      g.fillStyle = ink;
+      pts.forEach(([i, s]) => { g.beginPath(); g.arc(X(i), Y(s), 2.6, 0, Math.PI * 2); g.fill(); });
+    }
+  }
+
   /* ------------------------------------------------------------ nav */
   function initNav() {
     const dropdown = $("#extDropdown");
@@ -683,23 +745,42 @@
       }
     }
 
+    let lastResult = null;
+
     function renderResult(file, data) {
+      lastResult = { file, data };          // so redraw() can re-run the chart
       dzMain.textContent = "Drop another recording, or click to choose one";
       const mean = data?.summary?.mean_score;
       $("#resFile").textContent = file.name;
       $("#resModel").textContent = data.model || "server default";
-      $("#resWindows").textContent = `${data.windows_scored ?? "0"} / ${data.expected_windows ?? "?"}`;
+      // "32 / 42" on its own reads as a failure. It usually is not: the silence
+      // gate drops quiet windows on purpose, and expected_windows counts what
+      // the ring buffer emitted BEFORE that gate. Say so.
+      const scored = data.windows_scored ?? 0;
+      const expected = data.expected_windows ?? "?";
+      const gated = data.windows_gated ?? 0;
+      $("#resWindows").textContent =
+        gated > 0 ? `${scored} / ${expected}  (${gated} skipped as silence)`
+                  : `${scored} / ${expected}`;
 
-      const strip = $("#resStrip");
-      const scores = Object.keys(data.scores || {})
-        .sort((a, b) => (+a) - (+b))
-        .map((k) => data.scores[k].score);
+      const resCanvas = $("#resCanvas");
+      // Keys are the indices of windows that PASSED the gate, so this is window
+      // order over the clip, not wall-clock seconds — the axis label says so.
+      const pts = Object.keys(data.scores || {})
+        .map((k) => [+k, data.scores[k].score])
+        .sort((a, b) => a[0] - b[0]);
+      const scores = pts.map(([, s]) => s);
 
       if (mean === null || mean === undefined) {
         $("#resMean").textContent = "—";
-        $("#resBand").textContent = "No windows scored (too short, or all silence)";
+        // The old text guessed between two causes and named neither. The server
+        // now returns the gate setting it actually used, so report it.
+        $("#resBand").textContent =
+          gated > 0 && gated >= (data.expected_windows ?? 0)
+            ? `Every window was skipped as silence — gate: ${data.vad || "server default"}`
+            : "No windows scored — the server accepted the file but returned no scores";
         $("#resBand").style.color = "var(--ink-3)";
-        if (strip) strip.replaceChildren();
+        drawRiskChart(resCanvas, [], "window →");   // empty bands, not a blank box
         setGauge(null);
       } else {
         const band = bandFor(mean);
@@ -707,19 +788,27 @@
         $("#resBand").textContent = band.name;
         $("#resBand").style.color = band.css;
         setGauge(mean);
-        if (strip) {
-          strip.replaceChildren();
-          for (const v of scores) {
-            const bar = document.createElement("i");
-            bar.className = bandFor(v).cls;
-            bar.style.height = `${Math.max(6, v * 100).toFixed(0)}%`;
-            bar.title = `${(v * 100).toFixed(1)}%`;
-            strip.appendChild(bar);
-          }
-        }
+        drawRiskChart(resCanvas, pts, "window →");
       }
       resultBox.dataset.show = "true";
     }
+
+    // A canvas sized in CSS percent draws at the wrong scale if it was laid out
+    // while hidden, and re-rasterises blurry after a resize or a theme change
+    // (the chart reads its colours from CSS custom properties).
+    let redrawTimer = null;
+    const redraw = () => {
+      clearTimeout(redrawTimer);
+      redrawTimer = setTimeout(() => {
+        if (resultBox?.dataset.show === "true" && lastResult) {
+          renderResult(lastResult.file, lastResult.data);
+        }
+      }, 120);
+    };
+    window.addEventListener("resize", redraw);
+    new MutationObserver(redraw).observe(document.documentElement, {
+      attributes: true, attributeFilter: ["data-theme"],
+    });
   }
 
   /* ------------------------------------------------------------ embedded live capture
@@ -807,57 +896,9 @@ registerProcessor('cap', Cap);
     }
 
     function drawRisk() {
-      if (!canvas) return;
-      const dpr = window.devicePixelRatio || 1;
-      const cssW = canvas.clientWidth || 460, cssH = canvas.clientHeight || 320;
-      canvas.width = cssW * dpr; canvas.height = cssH * dpr;
-      const g = canvas.getContext("2d");
-      g.setTransform(dpr, 0, 0, dpr, 0, 0);
-      g.clearRect(0, 0, cssW, cssH);
-
-      const cs = getComputedStyle(document.documentElement);
-      const good = cs.getPropertyValue("--good").trim() || "#16a34a";
-      const warn = cs.getPropertyValue("--warn").trim() || "#d97706";
-      const crit = cs.getPropertyValue("--crit").trim() || "#dc2626";
-      const ink3 = cs.getPropertyValue("--ink-3").trim() || "#8a8f98";
-      const ink = cs.getPropertyValue("--ink").trim() || "#16171a";
-
-      const padL = 36, padR = 12, padT = 10, padB = 20;
-      const w = cssW - padL - padR, h = cssH - padT - padB;
-      const pts = [...scoresByIdx.entries()].sort((a, b) => a[0] - b[0]);
-      const maxIdx = pts.length ? pts[pts.length - 1][0] : 0;
-      const spanIdx = Math.max(20, maxIdx);
-      const X = (i) => padL + (spanIdx ? (i / spanIdx) * w : 0);
-      const Y = (s) => padT + (1 - s) * h;
-
-      const bands = [[0, AMBER_AT, good], [AMBER_AT, RED_AT, warn], [RED_AT, 1, crit]];
-      g.globalAlpha = 0.10;
-      for (const [lo, hi, col] of bands) {
-        g.fillStyle = col;
-        g.fillRect(padL, Y(hi), w, Y(lo) - Y(hi));
-      }
-      g.globalAlpha = 1;
-
-      g.lineWidth = 1; g.font = "10px system-ui"; g.setLineDash([4, 3]);
-      for (const [y, col, txt] of [[AMBER_AT, warn, "Amber"], [RED_AT, crit, "Red"]]) {
-        g.strokeStyle = col; g.beginPath(); g.moveTo(padL, Y(y)); g.lineTo(padL + w, Y(y)); g.stroke();
-        g.fillStyle = col; g.fillText(txt, padL + w - 32, Y(y) - 3);
-      }
-      g.setLineDash([]);
-
-      g.fillStyle = ink3;
-      g.fillText("100%", 2, Y(1) + 3);
-      g.fillText("50%", 6, Y(0.5) + 3);
-      g.fillText("0%", 12, Y(0) + 3);
-      g.fillText("time →", padL, cssH - 5);
-
-      if (pts.length) {
-        g.strokeStyle = ink; g.lineWidth = 2; g.beginPath();
-        pts.forEach(([i, s], k) => { const x = X(i), y = Y(s); k ? g.lineTo(x, y) : g.moveTo(x, y); });
-        g.stroke();
-        g.fillStyle = ink;
-        pts.forEach(([i, s]) => { g.beginPath(); g.arc(X(i), Y(s), 2.6, 0, Math.PI * 2); g.fill(); });
-      }
+      // Body lifted to the shared drawRiskChart() so the upload panel draws the
+      // same chart from the same code.
+      drawRiskChart(canvas, [...scoresByIdx.entries()].sort((a, b) => a[0] - b[0]));
     }
 
     async function start() {
