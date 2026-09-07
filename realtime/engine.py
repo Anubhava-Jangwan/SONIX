@@ -12,6 +12,7 @@ import logging
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Callable
 import numpy as np
+import torch
 
 from realtime import models as model_registry
 
@@ -65,6 +66,12 @@ class ScoringEngine:
         self.total_windows_scored = 0
         self.total_batches = 0
         self.failed_batches = 0
+
+        # Scoring-loop health. A dead loop used to be invisible: the UI
+        # could only report "nothing was scored" and every explanation it
+        # offered (bad file, silence gate) was wrong.
+        self.errors = 0
+        self.last_error = None
 
         # The front-end is ~300M parameters and takes tens of seconds to load.
         # Doing that lazily inside the first scoring batch made the first upload
@@ -248,6 +255,7 @@ class ScoringEngine:
 
     def _head_forward(self, head, embeddings: np.ndarray) -> np.ndarray:
         """Synchronous head inference. Called via to_thread, never inline."""
+<<<<<<< HEAD
         # Imported here, not at module scope: mock mode must keep working on a
         # machine with no torch installed (realtime/mock.py is deliberately
         # torch-free), and this function is the only place in the file that
@@ -255,10 +263,13 @@ class ScoringEngine:
         # raised NameError on the first real batch -- see the guard in run().
         import torch
 
+=======
+        dev = next(head.parameters()).device if hasattr(head, "parameters") else (self.device or "cpu")
+>>>>>>> 19ae017eee4118e8f66a7b904649d392682e181d
         with torch.no_grad():
-            xb = torch.from_numpy(np.ascontiguousarray(embeddings)).float().to(self.device)
+            xb = torch.from_numpy(np.ascontiguousarray(embeddings)).float().to(dev)
             logits = head(xb)
-            if logits.shape[-1] == 2:
+            if hasattr(logits, "shape") and logits.shape[-1] == 2:
                 out = torch.softmax(logits, dim=-1)[:, 1]
             else:
                 out = torch.sigmoid(logits).squeeze(-1)
@@ -293,6 +304,7 @@ class ScoringEngine:
                     continue
 
                 call_ids, window_indices, model_keys, windows = result
+<<<<<<< HEAD
 
                 # Anything raised below used to escape the while loop and kill
                 # this task outright. The server kept serving, sessions kept
@@ -300,11 +312,14 @@ class ScoringEngine:
                 # scored" with nothing in the log explaining it -- which is
                 # exactly how a missing `import torch` in _head_forward stayed
                 # invisible. Log it, drop the batch, keep scoring.
+=======
+>>>>>>> 19ae017eee4118e8f66a7b904649d392682e181d
                 try:
                     embeddings = await self._embed_windows(windows)
                     scores = await self._score_windows(embeddings, model_keys)
                 except asyncio.CancelledError:
                     raise
+<<<<<<< HEAD
                 except Exception:
                     self.failed_batches += 1
                     logger.exception(
@@ -312,6 +327,17 @@ class ScoringEngine:
                         "dropping it and continuing",
                         len(windows), sorted(set(call_ids)))
                     await asyncio.sleep(self.batch_interval)
+=======
+                except Exception as exc:
+                    # One bad batch must never end scoring for the life of
+                    # the server. It did exactly that once -- a NameError in
+                    # the head forward pass killed this task on the first
+                    # window and every later upload silently scored nothing.
+                    self.errors += 1
+                    self.last_error = f"{type(exc).__name__}: {exc}"
+                    logger.error(f"Engine: batch failed: {exc}", exc_info=True)
+                    await asyncio.sleep(0.5)
+>>>>>>> 19ae017eee4118e8f66a7b904649d392682e181d
                     continue
 
                 for i, call_id in enumerate(call_ids):
@@ -328,7 +354,15 @@ class ScoringEngine:
                     for i, call_id in enumerate(call_ids):
                         entry = broadcast_data.setdefault(
                             call_id, {"batch": [], "model": model_keys[i]})
-                        item = {"window_idx": window_indices[i], "score": float(scores[i])}
+                        session = self.sessions.get(call_id)
+                        item = {
+                            "window_idx": window_indices[i],
+                            "score": float(scores[i]),
+                            # Audio clock, not arrival clock - see
+                            # Session.window_time. Without it a live chart drifts
+                            # right by however far scoring is behind.
+                            "t": session.window_time(window_indices[i]) if session else None,
+                        }
                         entry["batch"].append(item)
                         entry["window_idx"] = item["window_idx"]
                         entry["score"] = item["score"]
@@ -359,6 +393,8 @@ class ScoringEngine:
             "loaded_models": sorted(self.heads.keys()),
             "warm": bool(self.warm),
             "warming": bool(self.warming),
+            "errors": int(self.errors),
+            "last_error": self.last_error,
             "default_model": self.default_key,
             "avg_windows_per_batch": (
                 self.total_windows_scored / self.total_batches if self.total_batches > 0 else 0

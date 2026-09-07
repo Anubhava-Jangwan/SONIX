@@ -56,20 +56,37 @@ REGISTRY = {
         "safe to quote Indic numbers from.",
     ),
     "full_indic_as5": (
+<<<<<<< HEAD
         "Full + Indic (AS5)",
         "outputs/models/head_full_indic_as5.pt",
         "Same recipe as Full + Indic, retrained variant (AS5). No reproduced "
         "EER to quote yet -- here to test end to end.",
+=======
+        "Full + Indic + ASVspoof5 (Navya)",
+        "outputs/models/head_full_indic_as5.pt",
+        "Navya's head: the full augmented stack plus IndicVoices plus ASVspoof 5. "
+        "NO EER HAS BEEN VERIFIED FOR THIS CHECKPOINT ON THIS MACHINE -- run "
+        "verify_head.py and bench_clips.py before quoting anything from it.",
+    ),
+    "v3": (
+        "SONIX v3 (multilingual)",
+        "outputs/models/head_v3.pt",
+        "Clean + G.711 + RawBoost + RIR/MUSAN + IndicVoices + 35,200 Indic spoofs across "
+        "three synthesis families (MMS-TTS, IndicSynth voice conversion, channel-augmented "
+        "copies of both). The first head with Indian languages on BOTH sides of the label.",
+>>>>>>> 19ae017eee4118e8f66a7b904649d392682e181d
     ),
 }
 
 # The head the server loads and the dashboard opens on when nothing else is
-# named. head_full_ho is best on every axis measured so far -- DF21 EER,
-# dev EER, and genuine-Indian-speech false alarms -- with no trade-off against
-# detection. If it is missing from outputs/models/, the server falls back to
-# whichever registered head IS present, so a teammate without the file still
-# gets a working server.
-DEFAULT_KEY = "full_ho"
+# named. v3 is the first head with Indian languages on BOTH sides of the
+# label, which is the whole point of the Indic work; head_full_ho scored
+# better on genuine Indian speech only because every Indian clip it ever saw
+# was genuine, so that number measured nothing. v3 is the default on that
+# reasoning, NOT on a verified head-to-head -- the sonix_real/ pair test
+# decides it. If the file is missing the server falls back to whichever
+# registered head IS present, so a teammate without it still gets a server.
+DEFAULT_KEY = "v3"
 
 
 def resolve_ckpt(ckpt_path):

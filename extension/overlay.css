@@ -1,20 +1,23 @@
+/* SONIX in-call overlay.
+   Tokens mirror popup.css (dark variants) and demo/theme.py. Radii and type
+   sizes match the popup so the overlay reads as the same product. */
 #sonix-overlay{
   position:fixed;top:14px;right:14px;z-index:2147483647;
-  background:rgba(16,22,23,.94);color:#eef4f4;
-  border:1px solid rgba(255,255,255,.12);border-radius:10px;
+  background:rgba(18,26,27,.94);color:#eef4f4;
+  border:1px solid #263334;border-radius:10px;
   padding:9px 12px;min-width:186px;
-  font:13px/1.45 "Google Sans",system-ui,-apple-system,Segoe UI,Roboto,sans-serif;
+  font:13px/1.45 "IBM Plex Sans",system-ui,-apple-system,Segoe UI,Roboto,sans-serif;
   box-shadow:0 6px 24px -8px rgba(0,0,0,.6);
   backdrop-filter:blur(6px);pointer-events:none;user-select:none;
 }
 #sonix-overlay .sonix-row{display:flex;align-items:center;gap:7px}
-#sonix-overlay .sonix-dot{width:8px;height:8px;border-radius:50%;background:#6e7d7d;flex:none}
+#sonix-overlay .sonix-dot{width:8px;height:8px;border-radius:50%;background:#7e8d8d;flex:none}
 #sonix-overlay .sonix-name{
-  font-size:10px;letter-spacing:.14em;text-transform:uppercase;
-  color:#8fa0a0;font-weight:600;
+  font-size:10px;letter-spacing:.12em;text-transform:uppercase;
+  color:#7e8d8d;font-weight:600;
 }
 #sonix-overlay .sonix-band{margin-left:auto;font-weight:700;font-variant-numeric:tabular-nums}
-#sonix-overlay .sonix-sub{margin-top:3px;font-size:10.5px;color:#93a3a3}
+#sonix-overlay .sonix-sub{margin-top:3px;font-size:11px;color:#b3c1c1}
 @media (prefers-reduced-motion:no-preference){
   #sonix-overlay{transition:opacity .18s ease}
 }

@@ -29,12 +29,13 @@ function removeOverlay() {
 }
 
 function bandFor(score, available) {
-  if (!available) return ["Monitoring", "#0b7c86", "Scoring unavailable — no trained head loaded"];
-  if (score === null || score === undefined) return ["Listening", "#6e7d7d", "Waiting for the first scored window"];
+  // SONIX tokens, dark variants - the overlay always sits on a dark chip.
+  if (!available) return ["Monitoring", "#3fc2ce", "Scoring unavailable — no trained head loaded"];
+  if (score === null || score === undefined) return ["Listening", "#7e8d8d", "Waiting for the first scored window"];
   const pct = Math.round(score * 100);
-  if (score >= 0.65) return [`Red · ${pct}%`, "#d03b3b", "Likely synthetic — verify by another channel"];
-  if (score >= 0.35) return [`Amber · ${pct}%`, "#fab219", "Uncertain — treat with caution"];
-  return [`Green · ${pct}%`, "#0ca30c", "Consistent with a real voice"];
+  if (score >= 0.65) return [`Red · ${pct}%`, "#f0685f", "Likely synthetic — verify by another channel"];
+  if (score >= 0.35) return [`Amber · ${pct}%`, "#e0a92b", "Uncertain — treat with caution"];
+  return [`Green · ${pct}%`, "#39c26a", "Consistent with a real voice"];
 }
 
 chrome.runtime.onMessage.addListener((msg) => {
@@ -49,9 +50,9 @@ chrome.runtime.onMessage.addListener((msg) => {
   const node = ensureOverlay();
 
   if (s.callState === "consent_pending") {
-    node.querySelector(".sonix-dot").style.background = "#fab219";
+    node.querySelector(".sonix-dot").style.background = "#e0a92b";
     node.querySelector(".sonix-band").textContent = `Code ${s.pairingCode || "------"}`;
-    node.querySelector(".sonix-band").style.color = "#fab219";
+    node.querySelector(".sonix-band").style.color = "#e0a92b";
     node.querySelector(".sonix-sub").textContent = "Approve in the SONIX dashboard to begin";
     return;
   }

@@ -9,98 +9,142 @@ Serves a self-contained page at /mic that:
      as binary frames
   4. shows the pairing code and waits - audio is buffered by the server but not
      scored until an operator approves the code in the dashboard
-  5. once scoring starts, plots P(AI voice) per 4-second window on a risk
-     timeline (same Green/Amber/Red bands as the dashboard and the Upload tab)
+  5. plots each scored window against the AUDIO clock the server sends with it,
+     so the line does not slide right when scoring falls behind capture
 
 getUserMedia requires a secure context. http://localhost counts as secure, so
 this works for the demo without TLS. Serving it over a LAN IP will NOT work
 without https - use localhost, or tunnel.
+
+`?embed=1` drops the page's own heading and outer frame so the dashboard can
+inline it as part of the page rather than as a card inside a card. Capture,
+windowing, the socket and the chart are the same code in both views.
 """
 
+import sys
+from pathlib import Path
+
 from aiohttp import web
+
+# demo/ is not a package, so it goes on the path rather than having its hex
+# values copied in here - one palette, one place. See demo/theme.py.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "demo"))
+import theme  # noqa: E402
 
 PAGE = r"""<!doctype html>
 <meta charset="utf-8">
 <title>SONIX - Microphone Capture</title>
 <meta name="viewport" content="width=device-width,initial-scale=1">
+<link rel="icon" href="data:,">
 <style>
-  :root{--bg:#0d0d0d;--surface:#1a1a19;--ink:#fff;--muted:#898781;--line:#2c2c2a;
-        --good:#0ca30c;--warning:#fab219;--critical:#d03b3b;--blue:#3987e5}
+  __TOKENS__
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after { animation-duration: .001ms !important;
+      transition-duration: .001ms !important; }
+  }
+  @keyframes sonix-pulse { 0%,100%{opacity:1} 50%{opacity:.35} }
+  @keyframes sonix-in { from{opacity:0;transform:translateY(4px)} to{opacity:1;transform:translateY(0)} }
   *{box-sizing:border-box}
-  body{margin:0;background:var(--bg);color:var(--ink);
-       font:15px/1.5 system-ui,-apple-system,Segoe UI,Roboto,sans-serif;
-       display:flex;align-items:center;justify-content:center;min-height:100vh;padding:24px}
-  .card{background:var(--surface);border:1px solid var(--line);border-radius:12px;
-        padding:28px;max-width:520px;width:100%}
-  h1{font-size:18px;margin:0 0 4px}
-  .sub{color:var(--muted);font-size:13px;margin-bottom:22px}
-  .row{display:flex;align-items:center;gap:10px;margin:14px 0}
-  .dot{width:9px;height:9px;border-radius:50%;background:var(--muted);flex:none}
+  body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.55 var(--font);
+       -webkit-font-smoothing:antialiased}
+  .wrap{max-width:720px;margin:0 auto;padding:32px 24px 28px;
+        animation:sonix-in var(--dur-slow) var(--ease)}
+  h1{font-size:20px;font-weight:650;margin:0 0 3px;letter-spacing:-.01em}
+  .sub{color:var(--ink-2);font-size:13px;margin-bottom:22px}
+  .label{color:var(--muted);font-size:10.5px;text-transform:uppercase;
+         letter-spacing:.09em;font-weight:600}
+
+  /* Control bar: action, state, input level. One line, no box around it. */
+  .bar{display:flex;align-items:center;gap:18px;flex-wrap:wrap}
+  button{font:inherit;font-weight:600;font-size:13.5px;padding:9px 18px;
+         border-radius:8px;border:0;cursor:pointer;background:var(--accent);
+         color:#fff;transition:filter var(--dur-fast) var(--ease),
+         transform var(--dur-fast) var(--ease)}
+  button:hover{filter:brightness(1.08);transform:translateY(-1px)}
+  button:active{transform:translateY(0)}
+  /* Stop is neutral on purpose: red on this page means the risk band and
+     nothing else, so an active-capture button must not borrow it. */
+  button.stop{background:var(--surface);color:var(--ink);
+              box-shadow:inset 0 0 0 1px var(--line)}
+  button.stop:hover{background:var(--raised);filter:none}
+  button:disabled{opacity:.45;cursor:not-allowed;transform:none}
+  button:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+  .state{display:flex;align-items:center;gap:8px;color:var(--ink-2);font-size:13px}
+  .dot{width:7px;height:7px;border-radius:50%;background:var(--muted);flex:none;
+       transition:background var(--dur-med) var(--ease)}
   .dot.on{background:var(--good)}.dot.err{background:var(--critical)}
-  .dot.wait{background:var(--warning)}
-  button{font:inherit;font-weight:600;padding:11px 20px;border-radius:8px;border:0;
-         cursor:pointer;background:var(--blue);color:#fff}
-  button.stop{background:var(--critical)}
-  button:disabled{opacity:.45;cursor:not-allowed}
-  .meter{height:8px;background:#2c2c2a;border-radius:4px;overflow:hidden;margin-top:6px}
-  .meter i{display:block;height:100%;width:0;background:var(--good);transition:width .08s linear}
-  .code{font-size:34px;letter-spacing:.14em;font-weight:700;font-variant-numeric:tabular-nums}
-  .label{color:var(--muted);font-size:12px;text-transform:uppercase;letter-spacing:.07em}
-  .stat{display:flex;justify-content:space-between;font-size:13px;color:var(--muted);
-        padding:5px 0;border-bottom:1px solid var(--line)}
-  .stat b{color:var(--ink);font-weight:600;font-variant-numeric:tabular-nums}
-  .warn{background:#2a2410;border:1px solid #6b5518;color:#fab219;padding:10px 12px;
-        border-radius:8px;font-size:13px;margin-top:18px}
-  .band{margin:18px 0 10px;padding:14px;border-radius:10px;border:1px solid var(--line);
-        background:#141413;text-align:center}
-  .verdict{font-size:26px;font-weight:700;line-height:1.2;font-variant-numeric:tabular-nums}
-  .why{color:var(--muted);font-size:12px;margin-top:5px}
-  .metrics{display:flex;gap:8px;margin:14px 0 6px}
-  .metrics>div{flex:1;background:#141413;border:1px solid var(--line);border-radius:8px;
-               padding:8px 6px;text-align:center}
-  .metrics b{display:block;font-size:19px;font-weight:700;font-variant-numeric:tabular-nums;margin-top:2px}
-  canvas#risk{width:100%;height:170px;display:block;margin-top:6px;border-radius:8px;
-              background:#0a0a0a;border:1px solid var(--line)}
-  #scorebox[hidden]{display:none}
+  .dot.wait{background:var(--warning);animation:sonix-pulse 1.4s var(--ease) infinite}
+  .lvl{flex:1;min-width:180px}
+  .lvlhead{display:flex;justify-content:space-between;align-items:baseline;
+           gap:8px;margin-bottom:5px}
+  .meter{height:5px;background:var(--line);border-radius:3px;overflow:hidden}
+  .meter i{display:block;height:100%;width:0;background:var(--accent);
+           transition:width .06s linear}
+  .meter i.hot{background:var(--critical)}
+  .dbfs{font-family:var(--mono);font-size:11px;color:var(--muted);
+        font-variant-numeric:tabular-nums}
+
+  /* One block that holds EITHER the pairing code or the verdict, so approving
+     the call does not reflow the page (and never scrolls the embedded panel). */
+  .status{margin:20px 0 16px;padding:14px 16px 15px;border-radius:10px;
+          background:var(--surface);box-shadow:inset 3px 0 0 var(--muted),
+          0 1px 2px rgba(23,27,34,.05);
+          transition:box-shadow var(--dur-med) var(--ease)}
+  .headline{font-size:26px;font-weight:700;line-height:1.15;
+            font-variant-numeric:tabular-nums;letter-spacing:-.01em;
+            transition:color var(--dur-med) var(--ease)}
+  .headline.code{font-family:var(--mono);letter-spacing:.16em;font-size:30px}
+  .why{color:var(--ink-2);font-size:12.5px;margin-top:5px}
+
+  .chartlabel{display:flex;justify-content:space-between;align-items:baseline;
+              gap:12px;margin-bottom:6px}
+  canvas#graph{width:100%;height:176px;display:block}
+
+  .stats{display:flex;flex-wrap:wrap;gap:6px 22px;margin-top:14px;
+         padding-top:11px;border-top:1px solid var(--line);
+         font-size:12px;color:var(--muted)}
+  .stats b{color:var(--ink-2);font-weight:600;font-variant-numeric:tabular-nums;
+           font-family:var(--mono)}
+  .warn{background:var(--surface);box-shadow:inset 3px 0 0 var(--warning);
+        color:var(--ink-2);padding:11px 14px;border-radius:8px;
+        font-size:12.5px;margin-top:16px}
 </style>
-<div class="card">
-  <h1>SONIX &mdash; microphone capture</h1>
-  <div class="sub">Streams 16&nbsp;kHz mono PCM to the detection server.</div>
+<div class="wrap">
+  <h1>Live microphone</h1>
+  <div class="sub">Streams 16&nbsp;kHz mono PCM to the detection server &mdash;
+    4&nbsp;s windows at a 0.5&nbsp;s hop.</div>
 
-  <div class="row"><span class="dot" id="dot"></span><span id="status">Idle</span></div>
-
-  <div class="row" style="gap:14px">
+  <div class="bar">
     <button id="btn">Start capture</button>
-    <div style="flex:1">
-      <div class="label">Input level</div>
+    <select id="modelSel" title="Model" style="font:inherit;background:var(--surface);
+            color:var(--ink);border:1px solid var(--line);border-radius:8px;padding:8px 10px"></select>
+    <span class="state"><span class="dot" id="dot"></span><span id="status">Idle</span></span>
+    <div class="lvl">
+      <div class="lvlhead"><span class="label">Input level</span>
+        <span class="dbfs" id="dbfs">&mdash;</span></div>
       <div class="meter"><i id="level"></i></div>
     </div>
   </div>
 
-  <div id="pairing" style="display:none;margin:18px 0">
-    <div class="label">Pairing code &mdash; approve in the dashboard</div>
-    <div class="code" id="code">------</div>
+  <div class="status" id="statusblock">
+    <div class="label" id="statuseyebrow">Risk band</div>
+    <div class="headline" id="headline">&mdash;</div>
+    <div class="why" id="why">Press Start capture to begin.</div>
   </div>
 
-  <div class="stat"><span>Call ID</span><b id="callid">&mdash;</b></div>
-  <div class="stat"><span>Sample rate</span><b id="sr">&mdash;</b></div>
-  <div class="stat"><span>Audio sent</span><b id="sent">0.0 s</b></div>
-  <div class="stat"><span>State</span><b id="callstate">&mdash;</b></div>
-
-  <div class="band">
-    <div class="verdict" id="verdict">&mdash;</div>
-    <div class="why" id="why">Waiting for the first 4-second window.</div>
+  <div class="chartlabel">
+    <span class="label">P(AI voice) &mdash; one point per 4&nbsp;s window</span>
+    <span class="label" style="text-transform:none;letter-spacing:0">
+      last 60&nbsp;s of call</span>
   </div>
+  <canvas id="graph" height="176"></canvas>
 
-  <div id="scorebox">
-    <div class="metrics">
-      <div><span class="label">Latest</span><b id="mLatest">&mdash;</b></div>
-      <div><span class="label">Mean</span><b id="mMean">&mdash;</b></div>
-      <div><span class="label">Max</span><b id="mMax">&mdash;</b></div>
-      <div><span class="label">Windows</span><b id="mN">0</b></div>
-    </div>
-    <div class="label">Risk timeline &mdash; P(AI voice) per 4&nbsp;s window</div>
-    <canvas id="risk" height="170"></canvas>
+  <div class="stats">
+    <span>Call <b id="callid">&mdash;</b></span>
+    <span>Rate <b id="sr">&mdash;</b></span>
+    <span>Sent <b id="sent">0.0 s</b></span>
+    <span>State <b id="callstate">&mdash;</b></span>
+    <span>Scored <b id="nscored">0</b></span>
   </div>
 
   <div class="warn" id="warn" style="display:none"></div>
@@ -109,117 +153,215 @@ PAGE = r"""<!doctype html>
 <script>
 const WS_URL = (location.protocol === "https:" ? "wss://" : "ws://") + location.host + "/ws";
 const TARGET_SR = 16000;
-const HOP_S = 0.5;   // seconds between window starts (server RingBuffer hop)
 
 let ws = null, ctx = null, node = null, stream = null, running = false;
-let sentSamples = 0, callId = null;
+let sentSamples = 0, callId = null, pairingCode = null;
 
-// Must match AMBER_AT / RED_AT in realtime/live_ui.py and the extension - every
-// view of this decision has to agree.
+// Must match AMBER_AT / RED_AT in realtime/live_ui.py - the dashboard and this
+// page are two views of the same decision, and they must not disagree.
 const AMBER_AT = 0.35, RED_AT = 0.65;
 let scoringAvailable = false, lastScore = null;
-const scoresByIdx = new Map();   // window_idx -> P(AI) in [0,1]
+
+// Rolling score history: {t: SERVER seconds into the call, v: score}. t arrives
+// with the score (Session.window_time) and is when the audio was CAPTURED, not
+// when it finished scoring - that is the whole reason the line stays under the
+// audio instead of trailing it by however far the scorer is behind.
+const ROLLING_SEC = 60;
+let scoreHistory = [], callT0 = null;   // callT0: performance.now() at call start
 
 const $ = id => document.getElementById(id);
+function tok(name){
+  return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+}
 function setStatus(text, cls){ $("status").textContent = text; $("dot").className = "dot " + (cls||""); }
 function warn(msg){ $("warn").style.display = "block"; $("warn").textContent = msg; }
 
-// [name, css colour, plain-language action] - shared shape with popup.js/content.js
+// Seconds of call elapsed on the browser's own clock. The x-axis head follows
+// this, not the last score, so the chart keeps moving while a window is still
+// being scored instead of freezing and then jumping.
+function elapsed(){ return callT0 === null ? 0 : (performance.now() - callT0) / 1000; }
+
+// [name, css colour]
 function bandFor(s){
-  if (s === null || s === undefined) return ["—", "var(--muted)", "Waiting for the first 4-second window."];
-  if (s >= RED_AT)   return ["Red · "   + Math.round(s*100) + "%", "var(--critical)", "Likely synthetic — verify on another channel."];
-  if (s >= AMBER_AT) return ["Amber · " + Math.round(s*100) + "%", "var(--warning)",  "Uncertain — treat with caution."];
-  return                     ["Green · " + Math.round(s*100) + "%", "var(--good)",     "Consistent with a real voice."];
+  if (s === null)     return ["—", "var(--muted)"];
+  if (s >= RED_AT)    return ["Red",    "var(--critical)"];
+  if (s >= AMBER_AT)  return ["Amber",  "var(--warning)"];
+  return                     ["Green",  "var(--good)"];
+}
+
+function setBlock(eyebrow, text, why, colour, mono){
+  $("statuseyebrow").textContent = eyebrow;
+  $("headline").textContent = text;
+  $("headline").className = "headline" + (mono ? " code" : "");
+  $("headline").style.color = colour;
+  $("why").textContent = why;
+  $("statusblock").style.boxShadow =
+    "inset 3px 0 0 " + colour + ", 0 1px 2px rgba(23,27,34,.05)";
 }
 
 function renderBand(){
-  const v = $("verdict"), why = $("why");
-  if (!scoringAvailable){
-    v.textContent = "Scoring unavailable";
-    v.style.color = "var(--muted)";
-    why.textContent = "Server is running without a trained head (--ckpt). Capture is live; no verdict is shown.";
+  if (pairingCode && !scoreHistory.length){
+    setBlock("Pairing code", pairingCode,
+             "Approve this code in the dashboard. Audio is buffered, not scored, until you do.",
+             "var(--accent)", true);
     return;
   }
-  const [name, colour, action] = bandFor(lastScore);
-  v.textContent = name;
-  v.style.color = colour;
-  why.textContent = lastScore === null
-    ? "Waiting for the first 4-second window."
-    : action + "  (Amber ≥ 35%, Red ≥ 65% — provisional thresholds)";
-}
-
-function renderScores(){
-  const vals = [...scoresByIdx.values()];
-  const pct = x => (x === null || x === undefined) ? "—" : Math.round(x * 100) + "%";
-  if (vals.length){
-    const latestIdx = Math.max(...scoresByIdx.keys());
-    lastScore = scoresByIdx.get(latestIdx);
-    $("mLatest").textContent = pct(lastScore);
-    $("mMean").textContent   = pct(vals.reduce((a, b) => a + b, 0) / vals.length);
-    $("mMax").textContent    = pct(Math.max(...vals));
-    $("mN").textContent      = vals.length;
-  } else {
-    lastScore = null;
-    $("mLatest").textContent = $("mMean").textContent = $("mMax").textContent = "—";
-    $("mN").textContent = 0;
+  if (!running){
+    setBlock("Risk band", "—", "Press Start capture to begin.", "var(--muted)", false);
+    return;
   }
-  renderBand();
-  drawRisk();
+  if (!scoringAvailable){
+    setBlock("Risk band", "Scoring unavailable",
+             "Server is running without a trained head (--ckpt). Capture is live; no verdict is shown.",
+             "var(--muted)", false);
+    return;
+  }
+  if (lastScore === null){
+    setBlock("Risk band", "Listening", "Waiting for the first 4-second window.",
+             "var(--muted)", false);
+    return;
+  }
+  const [name, colour] = bandFor(lastScore);
+  setBlock("Risk band", name + " · " + Math.round(lastScore * 100) + "%",
+           "P(AI voice), 5-window mean. Amber ≥ 35%, Red ≥ 65% — provisional thresholds.",
+           colour, false);
 }
 
-// Plain 2D line chart of P(AI voice) over time, with the Green/Amber/Red
-// decision bands behind it - the "danger level" plot that replaced the
-// spectrogram. No charting library: it is one <canvas> and ~30 lines.
-function drawRisk(){
-  const c = $("risk");
-  if (!c) return;
-  const dpr = window.devicePixelRatio || 1;
-  const cssW = c.clientWidth || 460, cssH = 170;
-  c.width = cssW * dpr; c.height = cssH * dpr;
+// A plain score-over-time line: the number the verdict is actually taken from.
+// Raw points sit behind, small and muted - they are the evidence. The accent
+// line is the 5-window mean the band follows. Thresholds are two dashed rules.
+function drawGraph(){
+  const c = $("graph");
+  if (!c || !c.clientWidth) return;
+
+  // Floor of 2x regardless of the real devicePixelRatio: on a 1x display this
+  // still supersamples the canvas, which is what keeps thin lines and dashed
+  // threshold rules crisp instead of slightly fuzzy.
+  const dpr = Math.max(2, window.devicePixelRatio || 1);
+  const w = c.clientWidth, h = c.clientHeight || 176;
+  if (c.width !== Math.round(w * dpr) || c.height !== Math.round(h * dpr)){
+    c.width = Math.round(w * dpr); c.height = Math.round(h * dpr);
+  }
   const g = c.getContext("2d");
   g.setTransform(dpr, 0, 0, dpr, 0, 0);
-  g.clearRect(0, 0, cssW, cssH);
+  g.clearRect(0, 0, w, h);
 
-  const padL = 34, padR = 12, padT = 10, padB = 20;
-  const w = cssW - padL - padR, h = cssH - padT - padB;
-  const pts = [...scoresByIdx.entries()].sort((a, b) => a[0] - b[0]);
-  const maxIdx = pts.length ? pts[pts.length - 1][0] : 0;
-  const spanIdx = Math.max(20, maxIdx);          // at least 10 s of x-axis
-  const X = i => padL + (spanIdx ? (i / spanIdx) * w : 0);
-  const Y = s => padT + (1 - s) * h;
+  const L = 36, R = 10, T = 10, B = 22;        // plot padding
+  const pw = w - L - R, ph = h - T - B;
+  const LINE = tok("--line"), MUTED = tok("--muted");
 
-  // decision bands
-  const bands = [[0, AMBER_AT, "rgba(12,163,12,0.10)"],
-                 [AMBER_AT, RED_AT, "rgba(250,178,25,0.10)"],
-                 [RED_AT, 1, "rgba(208,59,59,0.13)"]];
-  for (const [lo, hi, col] of bands){ g.fillStyle = col; g.fillRect(padL, Y(hi), w, Y(lo) - Y(hi)); }
+  // Plot surface, so the chart reads as a panel without needing a border.
+  g.fillStyle = tok("--surface");
+  g.fillRect(L, T, pw, ph);
 
-  // threshold lines
-  g.lineWidth = 1; g.font = "10px system-ui";
-  g.setLineDash([4, 3]);
-  for (const [y, col, txt] of [[AMBER_AT, "#fab219", "Amber"], [RED_AT, "#d03b3b", "Red"]]){
-    g.strokeStyle = col; g.beginPath(); g.moveTo(padL, Y(y)); g.lineTo(padL + w, Y(y)); g.stroke();
-    g.fillStyle = col; g.fillText(txt, padL + w - 32, Y(y) - 3);
+  const tEnd = Math.max(elapsed(), ROLLING_SEC);
+  const tStart = tEnd - ROLLING_SEC;
+  const X = t => L + ((t - tStart) / ROLLING_SEC) * pw;
+  const Y = v => T + (1 - v) * ph;
+
+  g.font = "10px " + tok("--mono");
+  g.textBaseline = "middle";
+
+  g.strokeStyle = LINE; g.lineWidth = 1; g.fillStyle = MUTED; g.textAlign = "right";
+  [0, 0.25, 0.5, 0.75, 1].forEach(v => {
+    const y = Math.round(Y(v)) + 0.5;
+    g.beginPath(); g.moveTo(L, y); g.lineTo(L + pw, y); g.stroke();
+    if (v === 0 || v === 0.5 || v === 1) g.fillText(Math.round(v * 100) + "%", L - 7, y);
+  });
+
+  g.textAlign = "center";
+  for (let t = Math.ceil(tStart / 15) * 15; t <= tEnd + 0.01; t += 15){
+    const x = Math.round(X(t)) + 0.5;
+    g.strokeStyle = LINE; g.beginPath(); g.moveTo(x, T); g.lineTo(x, T + ph); g.stroke();
+    g.fillStyle = MUTED; g.fillText(Math.round(t) + "s", x, h - B / 2);
   }
-  g.setLineDash([]);
 
-  // axes
-  g.fillStyle = "#898781";
-  g.fillText("100%", 4, Y(1) + 3);
-  g.fillText("50%", 8, Y(0.5) + 3);
-  g.fillText("0%", 14, Y(0) + 3);
-  g.fillText((spanIdx * HOP_S).toFixed(0) + " s", padL + w - 26, cssH - 5);
-  g.fillText("time →", padL, cssH - 5);
+  // Threshold rules, named at the right edge - a dashed line on its own leaves
+  // the reader counting gridlines to work out which one it is.
+  g.lineWidth = 1;
+  [[AMBER_AT, tok("--warning"), "Amber"], [RED_AT, tok("--critical"), "Red"]].forEach(function(rule){
+    const y = Math.round(Y(rule[0])) + 0.5;
+    g.setLineDash([4, 4]);
+    g.strokeStyle = rule[1];
+    g.beginPath(); g.moveTo(L, y); g.lineTo(L + pw - 30, y); g.stroke();
+    g.setLineDash([]);
+    g.fillStyle = rule[1]; g.textAlign = "right"; g.font = "10px " + tok("--font");
+    g.fillText(rule[2], L + pw, y);
+  });
 
-  // score polyline + dots
-  if (pts.length){
-    g.strokeStyle = "#3987e5"; g.lineWidth = 2; g.beginPath();
-    pts.forEach(([i, s], k) => { const x = X(i), y = Y(s); k ? g.lineTo(x, y) : g.moveTo(x, y); });
-    g.stroke();
-    g.fillStyle = "#3987e5";
-    pts.forEach(([i, s]) => { g.beginPath(); g.arc(X(i), Y(s), 2.6, 0, Math.PI * 2); g.fill(); });
+  const pts = scoreHistory.filter(p => p.t >= tStart - 1);
+  if (!pts.length){
+    g.font = "12px " + tok("--font");
+    g.fillStyle = MUTED; g.textAlign = "center";
+    g.fillText(!running ? "Not capturing"
+               : (scoringAvailable ? "Waiting for the first scored window"
+                                   : "Scoring unavailable — no verdict is plotted"),
+               L + pw / 2, T + ph / 2);
+    return;
   }
+
+  g.fillStyle = MUTED; g.globalAlpha = 0.65;
+  pts.forEach(p => { g.beginPath(); g.arc(X(p.t), Y(p.v), 1.9, 0, 6.284); g.fill(); });
+  g.globalAlpha = 1;
+
+  g.strokeStyle = tok("--accent"); g.lineWidth = 2; g.lineJoin = "round";
+  g.beginPath();
+  pts.forEach((p, i) => {
+    const win = pts.slice(Math.max(0, i - 4), i + 1);
+    const mean = win.reduce((a, q) => a + q.v, 0) / win.length;
+    const x = X(p.t), y = Y(mean);
+    i ? g.lineTo(x, y) : g.moveTo(x, y);
+  });
+  g.stroke();
 }
+
+// One score, at the audio time the server captured it. Falls back to the local
+// clock only if an older server build sends no t.
+function pushScore(t, v){
+  scoreHistory.push({ t: (t === null || t === undefined) ? elapsed() : t, v: v });
+  scoreHistory.sort((a, b) => a.t - b.t);          // a batch can arrive unordered
+  const cutoff = elapsed() - ROLLING_SEC - 5;
+  while (scoreHistory.length && scoreHistory[0].t < cutoff) scoreHistory.shift();
+  $("nscored").textContent = scoreHistory.length;
+}
+
+// The band follows the 5-window mean, matching demo/risk.py - one noisy window
+// must not flip the verdict.
+function smoothedTail(){
+  if (!scoreHistory.length) return null;
+  const win = scoreHistory.slice(-5);
+  return win.reduce((a, p) => a + p.v, 0) / win.length;
+}
+
+// dBFS level meter with a fast attack and a slow release, so it reads like a
+// meter instead of flickering on every 128-sample block.
+let lvlDb = -90;
+function pushLevel(f32){
+  let sum = 0, peak = 0;
+  for (let i = 0; i < f32.length; i++){
+    const a = Math.abs(f32[i]);
+    sum += f32[i] * f32[i];
+    if (a > peak) peak = a;
+  }
+  const rms = Math.sqrt(sum / f32.length);
+  const db = rms > 1e-7 ? 20 * Math.log10(rms) : -90;
+  lvlDb = db > lvlDb ? db : lvlDb * 0.86 + db * 0.14;   // attack fast, release slow
+
+  const pct = Math.max(0, Math.min(100, ((lvlDb + 60) / 60) * 100));  // -60..0 dBFS
+  const bar = $("level");
+  bar.style.width = pct.toFixed(1) + "%";
+  bar.className = peak >= 0.99 ? "hot" : "";
+  $("dbfs").textContent = lvlDb <= -60 ? "silent" : lvlDb.toFixed(1) + " dBFS";
+}
+
+// Redraw on a timer while capturing: the x-axis head has to advance with the
+// call, not only when a score lands, or the plot freezes between windows and
+// then jumps. 4 fps is enough for a 60 s span and costs nothing.
+let ticker = null;
+function startTicker(){ if (!ticker) ticker = setInterval(drawGraph, 250); }
+function stopTicker(){ clearInterval(ticker); ticker = null; }
+
+window.addEventListener("resize", drawGraph);
 
 // AudioWorklet: forward raw float32 frames to the main thread.
 const WORKLET = `
@@ -263,12 +405,7 @@ async function start(){
            + "nothing about any voice. Plumbing and latency testing only — "
            + "never show this to anyone.");
     }
-  } catch { scoringAvailable = false; }
-
-  scoresByIdx.clear();
-  $("scorebox").hidden = !scoringAvailable;
-  renderScores();
-  renderBand();
+  } catch (e) { scoringAvailable = false; }
 
   // Ask for 16 kHz directly. Chrome/Edge honour this; if not, we resample below.
   ctx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: TARGET_SR });
@@ -280,41 +417,54 @@ async function start(){
 
   ws.onopen = () => {
     setStatus("Connected — awaiting approval", "wait");
-    ws.send(JSON.stringify({ type:"start_mic_call", sample_rate: ctx.sampleRate, caller:"browser-mic" }));
+    ws.send(JSON.stringify({ type:"start_mic_call", sample_rate: ctx.sampleRate,
+                            caller:"browser-mic", model: $("modelSel").value || undefined }));
   };
 
   ws.onmessage = ev => {
     if (typeof ev.data !== "string") return;
-    let m; try { m = JSON.parse(ev.data); } catch { return; }
+    let m; try { m = JSON.parse(ev.data); } catch (e) { return; }
 
     if (m.type === "mic_call_started"){
       callId = m.call_id;
+      callT0 = performance.now();     // the server created the session just now
       $("callid").textContent = callId;
-      $("code").textContent = m.pairing_code;
-      $("pairing").style.display = "block";
       $("callstate").textContent = "CONSENT_PENDING";
+      pairingCode = m.pairing_code;
+      renderBand();
     }
     if (m.type === "pairing_request" && m.call_id === callId){
-      $("code").textContent = m.pairing_code;
+      pairingCode = m.pairing_code;
+      renderBand();
     }
     if (m.type === "scores" && callId && m.data && m.data[callId]){
-      if (!scoringAvailable) return;          // mock scores never reach the plot
-      const d = m.data[callId];
-      const items = (Array.isArray(d.batch) && d.batch.length)
-        ? d.batch
-        : [{ window_idx: d.window_idx, score: d.score }];
-      for (const it of items){
-        if (it && it.window_idx != null && it.score != null){
-          scoresByIdx.set(it.window_idx, Math.max(0, Math.min(1, it.score)));
-        }
-      }
-      renderScores();
+      const entry = m.data[callId];
+      // scoringAvailable is NOT set here. The mock engine also broadcasts
+      // "scores" messages - only /api/status's scoring_available (checked
+      // once, above) says whether a head is actually loaded. Setting it true
+      // just because a message arrived would let mock noise render as a
+      // real Green/Amber/Red verdict.
+      pairingCode = null;
+      // Every window of the batch, not just its last one - a batch of 8 used to
+      // draw a single point and leave 3.5 s of the call unplotted.
+      const items = (entry.batch && entry.batch.length) ? entry.batch : [entry];
+      items.forEach(it => {
+        // Gate at the point data enters state, not just at render: a mock
+        // score must never reach scoreHistory, or a later render path could
+        // show it as a real verdict.
+        if (scoringAvailable && it && it.score !== null && it.score !== undefined)
+          pushScore(it.t, it.score);
+      });
+      lastScore = smoothedTail();
+      renderBand();
+      drawGraph();
     }
     if (m.type === "call_state" && m.call_id === callId){
       $("callstate").textContent = m.state.toUpperCase();
       if (m.state === "listening" || m.state === "scoring"){
         setStatus("Approved — streaming audio", "on");
-        $("pairing").style.display = "none";
+        pairingCode = null;
+        renderBand();
       }
     }
   };
@@ -325,12 +475,17 @@ async function start(){
   const src = ctx.createMediaStreamSource(stream);
   node = new AudioWorkletNode(ctx, "cap");
 
+  callT0 = performance.now();
+  scoreHistory = [];
+  lastScore = null;
+  running = true;
+  renderBand();
+  drawGraph();
+  startTicker();
+
   node.port.onmessage = ev => {
     const f32 = ev.data;
-
-    let peak = 0;
-    for (let i = 0; i < f32.length; i++){ const a = Math.abs(f32[i]); if (a > peak) peak = a; }
-    $("level").style.width = Math.min(100, peak * 140) + "%";
+    pushLevel(f32);
 
     if (ws && ws.readyState === WebSocket.OPEN){
       ws.send(floatToPCM16(f32).buffer);
@@ -340,46 +495,116 @@ async function start(){
   };
 
   src.connect(node);
-  // Keep the graph alive without echoing the mic to the speakers.
+  // Keep the worklet pulled without echoing the mic to the speakers.
   const mute = ctx.createGain(); mute.gain.value = 0;
   node.connect(mute).connect(ctx.destination);
 
-  running = true;
   $("btn").textContent = "Stop capture";
   $("btn").className = "stop";
 }
 
 function stop(){
   running = false;
+  stopTicker();
   if (ws && ws.readyState === WebSocket.OPEN){
     if (callId) ws.send(JSON.stringify({ type:"end_call", call_id: callId }));
     ws.close();
   }
   lastScore = null;
-  scoresByIdx.clear();
-  renderScores();
+  pairingCode = null;
+  lvlDb = -90;
+  $("level").style.width = "0%";
+  $("level").className = "";
+  $("dbfs").textContent = "—";
+  $("callstate").textContent = "ENDED";
   renderBand();
+  drawGraph();          // keep the axes on screen; only the data clears
   if (node) node.disconnect();
   if (stream) stream.getTracks().forEach(t => t.stop());
   if (ctx) ctx.close();
   ws = node = stream = ctx = null;
   $("btn").textContent = "Start capture";
   $("btn").className = "";
-  $("pairing").style.display = "none";
   setStatus("Stopped");
 }
 
 $("btn").onclick = () => running ? stop() : start();
-window.addEventListener("resize", drawRisk);
+
+// Populate the model picker before anyone clicks Start, so the choice is made
+// once up front rather than mid-capture. Same /api/models the dashboard uses.
+(async () => {
+  const sel = $("modelSel");
+  const addOpt = (value, label, selected) => {
+    const opt = document.createElement("option");
+    opt.value = value; opt.textContent = label;
+    if (selected) opt.selected = true;
+    sel.appendChild(opt);
+  };
+  try {
+    const info = await (await fetch("/api/models")).json();
+    const ready = (info.models || []).filter(m => m.exists);
+    sel.textContent = "";
+    if (info.mock || !ready.length){
+      addOpt("", "Mock", true);
+      sel.disabled = true;
+    } else {
+      // DOM nodes with textContent, not innerHTML - a model label comes from a
+      // checkpoint's own config and must never be interpreted as markup.
+      for (const m of ready) addOpt(m.key, m.label, m.key === info.default);
+    }
+  } catch (e) { sel.textContent = ""; addOpt("", "Default", true); }
+})();
 
 if (!navigator.mediaDevices || !window.AudioWorkletNode){
   $("btn").disabled = true;
   warn("This browser does not support AudioWorklet capture. Use Chrome or Edge.");
 }
+
+// Draw the empty frame immediately, so the panel looks intentional before the
+// first score rather than an empty box that pops into existence.
+renderBand();
+drawGraph();
 </script>
 """
 
+PAGE = PAGE.replace("__TOKENS__", theme.css_vars())
+
+
+# Panel view of the same page, for the dashboard's inline Live-microphone block.
+# Appended after the page's own <style>, so these rules win on equal specificity.
+#
+# No card: the dashboard framed this page AND the page framed itself, so the
+# panel read as a box inside a box floating in the middle of the tab. Here the
+# panel is transparent and full width - part of the page, not a widget sitting
+# on it. The heading goes too (Streamlit prints one); everything that does work
+# - controls, band, chart, stats - stays.
+EMBED_CSS = """
+<style>
+  body{background:transparent}
+  .wrap{max-width:none;padding:0}
+  h1,.sub{display:none}
+  .status{margin-top:16px}
+  canvas#graph{height:168px}
+</style>
+"""
+
+# Height of the embedded panel, in px. It is here rather than in live_ui.py
+# because this file owns the layout: an iframe cannot size itself to content, so
+# the number has to track the markup above. Fits the tallest state (pairing code
+# shown) with no inner scrollbar.
+EMBED_HEIGHT = 400
+
 
 async def mic_page_handler(request):
-    """Serve the microphone capture page."""
-    return web.Response(text=PAGE, content_type="text/html")
+    """Serve the microphone capture page.
+
+    `?embed=1` serves the same page without its heading and outer frame, so the
+    dashboard can inline it flush with the rest of the tab. One capture
+    implementation, two presentations - a second copy of the worklet and socket
+    code is exactly how the two views would start disagreeing about what was
+    captured.
+    """
+    page = PAGE
+    if request.query.get("embed") == "1":
+        page += EMBED_CSS
+    return web.Response(text=page, content_type="text/html")

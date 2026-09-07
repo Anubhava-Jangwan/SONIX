@@ -1,0 +1,23 @@
+# SONIX Streamlit theme.
+#
+# Single source of truth for the app chrome. The hex values here mirror
+# demo/theme.py - if you change one, change the other. (The plain-HTML /mic page
+# no longer duplicates them; it imports theme.css_vars().)
+#
+# Streamlit reads .streamlit/config.toml relative to the directory you launch
+# from, which is why an identical copy lives in demo/.
+
+[theme]
+base = "dark"
+primaryColor = "#3fc2ce"            # ACCENT - buttons, sliders, focus rings
+backgroundColor = "#0b1112"         # BG
+secondaryBackgroundColor = "#121a1b" # SURFACE - sidebar, cards, inputs
+textColor = "#eef4f4"               # INK
+font = "sans serif"
+
+[client]
+toolbarMode = "minimal"
+showErrorDetails = true
+
+[server]
+runOnSave = true

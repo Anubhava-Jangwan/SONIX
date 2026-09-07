@@ -51,7 +51,7 @@ async function ensureOffscreen() {
 /* Start / stop                                                        */
 /* ------------------------------------------------------------------ */
 
-async function startCapture(serverUrl) {
+async function startCapture(serverUrl, model) {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   if (!tab) throw new Error("No active tab.");
   if (!/^https:\/\/meet\.google\.com\//.test(tab.url || "")) {
@@ -73,6 +73,7 @@ async function startCapture(serverUrl) {
     streamId,
     serverUrl,
     caller: "google-meet",
+    model,
   });
 
   updateBadge();
@@ -97,10 +98,11 @@ async function stopCapture() {
 /* ------------------------------------------------------------------ */
 
 function bandFor(score) {
-  if (score === null || score === undefined) return { label: "—", colour: "#6e7d7d" };
-  if (score >= 0.65) return { label: "RED", colour: "#d03b3b" };
-  if (score >= 0.35) return { label: "AMBER", colour: "#fab219" };
-  return { label: "GREEN", colour: "#0ca30c" };
+  // SONIX tokens - keep in step with popup.css / demo/theme.py.
+  if (score === null || score === undefined) return { label: "—", colour: "#7e8d8d" };
+  if (score >= 0.65) return { label: "RED", colour: "#f0685f" };
+  if (score >= 0.35) return { label: "AMBER", colour: "#e0a92b" };
+  return { label: "GREEN", colour: "#39c26a" };
 }
 
 function updateBadge() {
@@ -134,7 +136,7 @@ function pushToOverlay() {
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   // From the popup
   if (msg.type === "popup:start") {
-    startCapture(msg.serverUrl)
+    startCapture(msg.serverUrl, msg.model)
       .then(() => sendResponse({ ok: true }))
       .catch((e) => {
         state.error = e.message;
