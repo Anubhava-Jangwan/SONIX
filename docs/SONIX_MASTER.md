@@ -554,21 +554,38 @@ caption stating its *conclusion*, not its axes.
 
 ### 13.2 What evaluators score
 
-| Weight | Criterion | What it means for us |
-|---|---|---|
-| **25 %** | Innovation & uniqueness | §13.3 — highest weight |
-| 20 % | Problem understanding | Show we understand *Indian* voice fraud specifically |
-| 20 % | Technical feasibility | Named components, real numbers, buildable architecture |
-| 20 % | Impact & scalability | Who benefits, at what scale, at what cost |
-| 15 % | Presentation quality | Necessary, smallest slice — don't spend all night on gradients |
+**CORRECTION (13 Sept).** Earlier versions of this file published a weighted rubric
+(Innovation 25 % / Problem understanding 20 % / …) sourced from reskilll.com. **That
+rubric is fabricated, and so is its claim that the deck may run to ten slides.** SIH
+publishes no percentage weights anywhere. The deck is **six slides, PDF only.**
 
-**Rejection patterns:** vagueness about *how* · drifting off the problem statement ·
-AI buzzwords with no substance.
+The official criteria, verbatim from sih.gov.in and repeated in the SPOC guidelines —
+nine named items, unweighted:
 
-**Format rules:** diagrams over text · **max 6 bullets/slide** · **min 14 pt font**.
+> "novelty of the idea, complexity, clarity and details in the prescribed format,
+> feasibility, practicability, sustainability, the scale of impact, user experience
+> and potential for future work progression."
 
-> ⚠️ Confirm the official SIH template from the portal. Slide counts vary by year.
-> This document gives content and visuals; map them onto whatever skeleton is official.
+Three deserve attention because most teams ignore them:
+
+- **"clarity and details in the prescribed format"** — template compliance is a scored
+  line, not hygiene. Wrong slide count, altered pointers or leftover placeholder text
+  costs marks directly.
+- **"practicability" and "sustainability"** — listed separately from "feasibility".
+  Self-hosted deployment, consumer-GPU training and minutes-not-days retraining are
+  what answer these.
+- **"potential for future work progression"** — roadmap is an official criterion, and
+  it is the legitimate home for the ambitious version of the system.
+
+Judging at the finale is **multi-round with the same jury** — feedback sessions each
+day plus a power round on the final day. Judges score the delta between visits, so
+hold something back to land between rounds.
+
+**Format rules:** max six slides including the title · diagrams over paragraphs ·
+max 6 bullets/slide · min 14 pt · export to PDF.
+
+> Full research, sources and failure modes: `docs/SONIX_National_Submission_Pack.pdf`,
+> Part D. Slide-by-slide build spec: Part B. Figures: `docs/SONIX_deck_assets.zip`.
 
 ### 13.3 Innovation — the 25 % slice
 
