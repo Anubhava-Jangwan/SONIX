@@ -28,20 +28,6 @@ def load(model_name="facebook/wav2vec2-xls-r-300m", device=None, half=True):
         device = "cuda" if torch.cuda.is_available() else "cpu"
     use_half = bool(half) and str(device).startswith("cuda")
 
-<<<<<<< HEAD
-    # Every restart was re-validating against the HF Hub before touching the
-    # already-downloaded local cache -- a dozen HTTP round trips (etag checks,
-    # a redirect chain, even /discussions and /commits lookups) adding ~20s
-    # measured 2026-09-05, though the actual weight load off disk takes <1s.
-    # Try the local cache first; only reach the network if it's genuinely not
-    # there yet, so a first-ever run still works unchanged.
-    try:
-        fe = AutoFeatureExtractor.from_pretrained(model_name, local_files_only=True)
-        model = AutoModel.from_pretrained(model_name, local_files_only=True)
-    except Exception:
-        fe = AutoFeatureExtractor.from_pretrained(model_name)
-        model = AutoModel.from_pretrained(model_name)
-=======
     # Load from the local HF cache first. Without this, transformers asks
     # the hub for main/model.safetensors, 404s, and then walks the repo's
     # open pull requests looking for one -- which silently pulls ~1.2 GB
@@ -57,7 +43,6 @@ def load(model_name="facebook/wav2vec2-xls-r-300m", device=None, half=True):
         fe = AutoFeatureExtractor.from_pretrained(model_name)
         model = AutoModel.from_pretrained(model_name)
         logger.info("front-end downloaded and loaded in %.1fs", time.time() - t0)
->>>>>>> 19ae017eee4118e8f66a7b904649d392682e181d
     model = model.eval().to(device)
     if use_half:
         model.half()

@@ -56,12 +56,6 @@ REGISTRY = {
         "safe to quote Indic numbers from.",
     ),
     "full_indic_as5": (
-<<<<<<< HEAD
-        "Full + Indic (AS5)",
-        "outputs/models/head_full_indic_as5.pt",
-        "Same recipe as Full + Indic, retrained variant (AS5). No reproduced "
-        "EER to quote yet -- here to test end to end.",
-=======
         "Full + Indic + ASVspoof5 (Navya)",
         "outputs/models/head_full_indic_as5.pt",
         "Navya's head: the full augmented stack plus IndicVoices plus ASVspoof 5. "
@@ -74,7 +68,6 @@ REGISTRY = {
         "Clean + G.711 + RawBoost + RIR/MUSAN + IndicVoices + 35,200 Indic spoofs across "
         "three synthesis families (MMS-TTS, IndicSynth voice conversion, channel-augmented "
         "copies of both). The first head with Indian languages on BOTH sides of the label.",
->>>>>>> 19ae017eee4118e8f66a7b904649d392682e181d
     ),
 }
 

@@ -255,17 +255,7 @@ class ScoringEngine:
 
     def _head_forward(self, head, embeddings: np.ndarray) -> np.ndarray:
         """Synchronous head inference. Called via to_thread, never inline."""
-<<<<<<< HEAD
-        # Imported here, not at module scope: mock mode must keep working on a
-        # machine with no torch installed (realtime/mock.py is deliberately
-        # torch-free), and this function is the only place in the file that
-        # needs it. It was previously used without being imported at all, which
-        # raised NameError on the first real batch -- see the guard in run().
-        import torch
-
-=======
         dev = next(head.parameters()).device if hasattr(head, "parameters") else (self.device or "cpu")
->>>>>>> 19ae017eee4118e8f66a7b904649d392682e181d
         with torch.no_grad():
             xb = torch.from_numpy(np.ascontiguousarray(embeddings)).float().to(dev)
             logits = head(xb)
@@ -304,7 +294,6 @@ class ScoringEngine:
                     continue
 
                 call_ids, window_indices, model_keys, windows = result
-<<<<<<< HEAD
 
                 # Anything raised below used to escape the while loop and kill
                 # this task outright. The server kept serving, sessions kept
@@ -312,32 +301,24 @@ class ScoringEngine:
                 # scored" with nothing in the log explaining it -- which is
                 # exactly how a missing `import torch` in _head_forward stayed
                 # invisible. Log it, drop the batch, keep scoring.
-=======
->>>>>>> 19ae017eee4118e8f66a7b904649d392682e181d
                 try:
                     embeddings = await self._embed_windows(windows)
                     scores = await self._score_windows(embeddings, model_keys)
                 except asyncio.CancelledError:
                     raise
-<<<<<<< HEAD
-                except Exception:
-                    self.failed_batches += 1
-                    logger.exception(
-                        "Engine: batch of %d window(s) failed for call(s) %s; "
-                        "dropping it and continuing",
-                        len(windows), sorted(set(call_ids)))
-                    await asyncio.sleep(self.batch_interval)
-=======
                 except Exception as exc:
                     # One bad batch must never end scoring for the life of
                     # the server. It did exactly that once -- a NameError in
                     # the head forward pass killed this task on the first
                     # window and every later upload silently scored nothing.
+                    self.failed_batches += 1
                     self.errors += 1
                     self.last_error = f"{type(exc).__name__}: {exc}"
-                    logger.error(f"Engine: batch failed: {exc}", exc_info=True)
-                    await asyncio.sleep(0.5)
->>>>>>> 19ae017eee4118e8f66a7b904649d392682e181d
+                    logger.exception(
+                        "Engine: batch of %d window(s) failed for call(s) %s; "
+                        "dropping it and continuing",
+                        len(windows), sorted(set(call_ids)))
+                    await asyncio.sleep(self.batch_interval)
                     continue
 
                 for i, call_id in enumerate(call_ids):

@@ -34,6 +34,11 @@ except Exception:                                   # pragma: no cover
         return ["RED" if v >= red_threshold else
                 ("AMBER" if v >= amber_threshold else "GREEN") for v in scores]
 
+# Same shared palette/CSS the /mic page renders from (realtime/miccapture.py,
+# via theme.css_vars()) -- one dark "control room" look across every SONIX
+# surface instead of this dashboard drifting on its own light-neutral CSS.
+import theme  # noqa: E402
+
 st.set_page_config(
     page_title="SONIX Live",
     page_icon="📱",
@@ -41,53 +46,25 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-<<<<<<< HEAD
-# One presentation-only stylesheet. Neutral greys only (they read the same in
-# light and dark); the Green/Amber/Red tokens live in the charts, never here.
-# Goal: drop the billboard-sized default Streamlit metrics and loose spacing for
-# a tighter product-dashboard rhythm.
-FONT_STACK = "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif"
+# theme.page_css() is the same dark "control room" stylesheet the /mic page
+# renders from - this used to be a hand-rolled light-neutral stylesheet that
+# only this dashboard had, which is why it looked like a different product
+# next to the microphone capture page. The few rules below are the ones
+# page_css() doesn't already cover (max-width, expander summary weight).
+st.markdown(theme.page_css(), unsafe_allow_html=True)
 st.markdown(
-    f"""<style>
-    html, body, [class*="css"], .stMarkdown, button, input {{ font-family: {FONT_STACK}; }}
-
-    /* Kill the huge top gap; give the content a sane max width. */
-    .block-container {{ padding-top: 2.4rem; padding-bottom: 3rem; max-width: 1440px; }}
-
-    /* Titles: deliberate hierarchy, not the default oversized serif-ish stack. */
-    h1 {{ font-size: 30px !important; font-weight: 800 !important; letter-spacing: -.02em; }}
-    h2 {{ font-size: 20px !important; font-weight: 700 !important; }}
-    h3 {{ font-size: 16px !important; font-weight: 700 !important; }}
-
-    /* Metrics as compact cards instead of billboards. */
-    [data-testid="stMetric"] {{
-        background: rgba(137,135,129,.06);
-        border: 1px solid rgba(137,135,129,.18);
-        border-radius: 12px; padding: 10px 14px;
-    }}
-    [data-testid="stMetricLabel"] p {{
-        font-size: 11px; font-weight: 700; letter-spacing: .12em;
-        text-transform: uppercase; opacity: .6;
-    }}
-    [data-testid="stMetricValue"] {{
-        font-size: 24px; font-weight: 700; font-variant-numeric: tabular-nums;
-    }}
-
-    /* Tab bar: quieter, tighter. */
-    [data-baseweb="tab-list"] {{ gap: 4px; border-bottom: 1px solid rgba(137,135,129,.22); }}
-    [data-baseweb="tab"] {{ font-weight: 600; padding: 8px 12px; }}
-
-    /* Expander header for each call: readable, not a blank bar. */
-    [data-testid="stExpander"] summary {{ font-weight: 600; font-size: 14px; }}
-    [data-testid="stExpander"] {{ border-radius: 12px; }}
-
-    hr {{ margin: 1rem 0; opacity: .5; }}
+    """<style>
+    .block-container { max-width: 1440px; }
+    [data-testid="stExpander"] summary { font-weight: 600; font-size: 14px; }
     </style>""",
     unsafe_allow_html=True,
 )
-=======
+
+# Streamlit dims the whole page while a rerun is in flight. On a dashboard that
+# reruns on a timer that reads as a constant flicker, so pin the opacity.
+# Kept as its own plain (non-f) string: the selectors above are in an f-string
+# and every brace there has to be doubled, which is a trap for CSS edits.
 st.markdown("""<style>
-/* Prevent Streamlit from dimming elements or changing opacity during runs/reruns */
 div[data-testid="stAppViewContainer"] [data-testid="stVerticalBlock"],
 div[data-testid="stAppViewContainer"] [data-testid="stHorizontalBlock"],
 div[data-testid="stMainBlockContainer"],
@@ -102,10 +79,7 @@ div[data-testid="stAppViewBlockContainer"] {
 .stApp[data-test-script-state="running"] .element-container {
     opacity: 1 !important;
 }
-.metric-box { padding: 1.5rem; border-radius: 0.5rem; background: #f0f2f6; }
-.score-high { color: #ff0000; font-weight: bold; } .score-low { color: #00aa00; font-weight: bold; }
 </style>""", unsafe_allow_html=True)
->>>>>>> 19ae017eee4118e8f66a7b904649d392682e181d
 
 # Use defaults (no secrets required)
 WS_URL = "ws://localhost:8000"
@@ -182,11 +156,12 @@ def post_json(path, payload):
 
 # --- Palette -------------------------------------------------------------
 # Status colours are reserved for the risk band and never reused as a series
-# colour. Muted ink is deliberately the same in light and dark mode, so the
-# charts stay legible whichever Streamlit theme the operator is running.
-GOOD, WARNING, CRITICAL = "#0ca30c", "#fab219", "#d03b3b"
-SERIES_1, MUTED = "#2a78d6", "#898781"
-GRID = "rgba(137,135,129,0.22)"
+# colour. Pulled from theme.py -- the same tokens the /mic page paints its
+# risk band and threshold lines with, so a call looks the same colour whether
+# it's read here or on the capture page.
+GOOD, WARNING, CRITICAL = theme.GOOD, theme.WARN, theme.CRIT
+SERIES_1, MUTED = theme.ACCENT, theme.INK_3
+GRID = theme.GRID
 
 # Plain-English band meanings for the compact legend under every timeline.
 # Colour is a signal, never the only one -- the word and the sentence carry it.
@@ -296,8 +271,9 @@ def score_readout(score, *, synthetic=False):
         if synthetic else ""
     )
     return (
-        f"<div style='border:1px solid rgba(137,135,129,.35);border-radius:14px;"
-        f"padding:16px 22px;background:rgba(137,135,129,.06)'>"
+        f"<div style='border:{theme.BORDER};border-radius:{theme.RADIUS};"
+        f"padding:16px 22px;background:{theme.SURFACE};"
+        f"box-shadow:inset 3px 0 0 {colour}'>"
         f"<span style='font-size:12px;font-weight:700;letter-spacing:.16em;"
         f"color:{MUTED}'>CURRENT P(AI VOICE)</span><br>"
         f"<span style='font-size:60px;font-weight:800;line-height:1.1;"
@@ -352,27 +328,17 @@ def _risk_bands(fig, overlay=None):
     if overlay:
         fig.add_annotation(text=overlay, showarrow=False, xref="paper", yref="paper",
                            x=0.5, y=0.5, font=dict(size=20, color=CRITICAL),
-                           bgcolor="rgba(255,255,255,0.82)", bordercolor=CRITICAL,
+                           bgcolor="rgba(18,26,27,0.90)", bordercolor=CRITICAL,
                            borderwidth=1, borderpad=10)
     return fig
 
 
 def base_layout(fig, height=300, y_title=""):
-    fig.update_layout(
-        height=height,
-        margin=dict(l=8, r=8, t=8, b=8),
-        paper_bgcolor="rgba(0,0,0,0)",
-        plot_bgcolor="rgba(0,0,0,0)",
-        font=dict(color=MUTED, size=12, family=FONT_STACK),
-        hovermode="x unified",
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, x=0,
-                    bgcolor="rgba(0,0,0,0)", font=dict(size=12)),
-    )
-    # Vertical gridlines are chartjunk here; keep the axis line + ticks only.
-    fig.update_xaxes(title_text="Seconds into call", showgrid=False,
-                     zeroline=False, linecolor=GRID, ticks="outside", tickcolor=GRID)
-    fig.update_yaxes(title_text=y_title, gridcolor=GRID,
-                     zeroline=False, linecolor=GRID, ticks="outside", tickcolor=GRID)
+    """Same chart chrome theme.plotly_layout() gives demo/app.py, plus the one
+    thing this dashboard wants different: no vertical gridlines (chartjunk on
+    a live scrolling timeline) -- axis line and ticks only."""
+    fig = theme.plotly_layout(fig, height=height, y_title=y_title)
+    fig.update_xaxes(showgrid=False)
     return fig
 
 
@@ -467,12 +433,13 @@ def band_card(band, label, latest):
     name, action, colour = BAND_STYLE.get(band, BAND_STYLE["GREEN"])
     latest_txt = f"{latest:.1%}" if latest is not None else "—"
     return (
-        f"<div style='border:4px solid {colour};border-radius:18px;"
-        f"padding:20px;text-align:center;background:rgba(127,127,127,0.06)'>"
+        f"<div style='border:{theme.BORDER};border-radius:{theme.RADIUS};"
+        f"padding:20px;text-align:center;background:{theme.SURFACE};"
+        f"box-shadow:inset 3px 0 0 {colour}'>"
         f"<div style='font-size:13px;font-weight:700;letter-spacing:2px;"
         f"color:{MUTED}'>{label.upper()}</div>"
         f"<div style='font-size:40px;font-weight:900;color:{colour}'>{name}</div>"
-        f"<div style='font-size:17px;font-weight:600'>{action}</div>"
+        f"<div style='font-size:17px;font-weight:600;color:{theme.INK}'>{action}</div>"
         f"<div style='font-size:13px;color:{MUTED};margin-top:6px'>"
         f"latest window {latest_txt}</div></div>"
     )
@@ -514,17 +481,10 @@ def render_upload_result(result, live=False, slots=None, frame_id=0):
         c3.metric("Max", f"{np.max(raw):.1%}" if raw else "—")
         c4.metric("% windows ≥ red", f"{np.mean(np.array(raw) >= RED_AT):.0%}" if raw else "—")
         if raw:
-<<<<<<< HEAD
             st.plotly_chart(upload_chart(times, raw, smoothed, overlay=ovl),
                             use_container_width=True, config=_no_bar,
                             key=f"chart_{result['call_id']}_static")
             st.markdown(band_legend_md(), unsafe_allow_html=True)
-=======
-            fig = upload_chart(times, raw, smoothed)
-            if fig:
-                st.plotly_chart(fig, use_container_width=True,
-                                key=f"chart_static_{result['call_id']}")
->>>>>>> 19ae017eee4118e8f66a7b904649d392682e181d
         return band
 
     with slots["band"].container():
@@ -539,7 +499,6 @@ def render_upload_result(result, live=False, slots=None, frame_id=0):
         c4.metric("% windows ≥ red",
                   f"{np.mean(np.array(raw) >= RED_AT):.0%}" if raw else "—")
     if raw:
-<<<<<<< HEAD
         # Stable key: same chart element across frames, so new points ease in
         # instead of the whole plot flashing on every Streamlit rerun.
         with slots["chart"].container():
@@ -548,15 +507,6 @@ def render_upload_result(result, live=False, slots=None, frame_id=0):
                 use_container_width=True, config=_no_bar,
                 key=f"chart_{result['call_id']}_live")
             st.markdown(band_legend_md(), unsafe_allow_html=True)
-=======
-        fig = upload_chart(times, raw, smoothed)
-        if fig:
-            with slots["chart"].container():
-                st.plotly_chart(
-                    fig, use_container_width=True,
-                    key=f"chart_{result['call_id']}_f{frame_id}"
-                )
->>>>>>> 19ae017eee4118e8f66a7b904649d392682e181d
     return band
 
 
@@ -698,7 +648,14 @@ def run_upload_stream(uploaded_file, model_key, model_label):
             )
         return
 
-    band = render_upload_result(result, live=True, slots=slots, frame_id=frame_idx + 1)
+    # The loop's last iteration already rendered this exact frame into `slots`
+    # (that's how `last_rendered_n` came to equal `n` for every loop exit path
+    # above) -- rendering it again here would reuse the same Streamlit chart
+    # key twice in one script run and raise StreamlitDuplicateElementKey, which
+    # left this success message never showing. Just read back the band it
+    # already drew instead of redrawing.
+    _, _, _, bands = _series_from_scores(result["scores"])
+    band = bands[-1] if bands else "GREEN"
     status.success(
         f"Done — {n} windows scored by the {model_label} model. Final band: {band}."
     )
@@ -737,17 +694,11 @@ def render_live_calls_tab():
     c3.metric("Windows scored", engine.get("total_windows_scored", 0))
     c4.metric("Scoring", "Live model" if scoring_available else "Not available")
 
-<<<<<<< HEAD
-        # One /api/status read per refresh: watermark the timeline if the head
-        # that produced these scores is untrained. Only matters when a chart
-        # would render at all.
-        synthetic = scoring_available and is_synthetic_head()
+    # One /api/status read per refresh: watermark the timeline if the head
+    # that produced these scores is untrained. Only matters when a chart
+    # would render at all.
+    synthetic = scoring_available and is_synthetic_head()
 
-        st.link_button("🎤  Open microphone capture", f"{server_url}/mic")
-        st.caption("Opens in a new tab — Chrome or Edge, on this machine. "
-                   "Press Start capture there, then approve the pairing code below.")
-        st.divider()
-=======
     if not scoring_available:
         st.warning(
             "**Risk scoring is switched off — no trained head is loaded.** "
@@ -755,7 +706,6 @@ def render_live_calls_tab():
             "The Green/Amber/Red band stays hidden until trained checkpoints in `outputs/models/` "
             "are loaded by the server without `--mock`."
         )
->>>>>>> 19ae017eee4118e8f66a7b904649d392682e181d
 
     st.link_button("🎤  Open microphone capture", f"{server_url}/mic")
     st.caption("Opens in a new tab — Chrome or Edge, on this machine. "
@@ -778,56 +728,6 @@ def render_live_calls_tab():
 
         with st.expander(f"{call.get('caller', 'unknown')} — {call_id} ({state.upper()})", expanded=True):
 
-<<<<<<< HEAD
-                m1, m2, m3, m4 = st.columns(4)
-                m1.metric("Duration", f"{call.get('duration', 0):.0f}s")
-                m2.metric("Windows emitted", rb.get("windows_emitted", 0))
-                m3.metric("Passed silence gate", f"{vad.get('windows_passed', 0)} / {vad.get('windows_seen', 0)}")
-                if scoring_available and latest is not None:
-                    m4.markdown(
-                        f"<div style='font-size:.8rem;color:{MUTED}'>RISK BAND</div>"
-                        f"<div style='font-size:1.6rem;font-weight:700;color:{band_colour}'>"
-                        f"{band} · {latest:.0%}</div>",
-                        unsafe_allow_html=True,
-                    )
-                else:
-                    m4.metric("Risk band", "—")
-
-                if scoring_available:
-                    st.markdown("**Risk timeline — P(AI voice) per 4s window**")
-                    st.markdown(score_readout(latest, synthetic=synthetic),
-                                unsafe_allow_html=True)
-                    fig = risk_chart(windows, scores, t0,
-                                     overlay=SYNTH_WATERMARK if synthetic else None)
-                    if fig:
-                        st.plotly_chart(fig, use_container_width=True,
-                                        key=f"risk_{call_id}",
-                                        config={"displayModeBar": False})
-                        st.markdown(band_legend_md(), unsafe_allow_html=True)
-                        st.caption(
-                            f"Thresholds: Amber ≥ {AMBER_AT:.0%}, Red ≥ {RED_AT:.0%}. "
-                            "Provisional — set on the clean benchmark, not yet recalibrated "
-                            "on real recordings."
-                        )
-                    else:
-                        st.info("No scored windows yet.")
-
-                st.markdown("**Audio path**")
-                fig2 = audio_path_chart(windows, t0)
-                if fig2:
-                    st.plotly_chart(fig2, use_container_width=True, key=f"audio_{call_id}")
-                    st.caption(
-                        f"{rb.get('windows_emitted', 0)} windows of 4.0s at a 0.5s hop from "
-                        f"{rb.get('seconds_buffered', 0):.1f}s of audio. "
-                        f"{vad.get('windows_rejected', 0)} dropped as silence "
-                        f"({vad.get('pass_rate', 0):.0%} pass rate)."
-                    )
-                else:
-                    st.info("Waiting for the first 4-second window to fill.")
-
-                if st.button("End call", key=f"end_{call_id}"):
-                    if post_json("/api/end-call", {"call_id": call_id}):
-=======
             if state == "consent_pending":
                 st.markdown("**Awaiting consent.** Audio is being buffered but not scored.")
                 p1, p2 = st.columns([2, 1])
@@ -839,7 +739,6 @@ def render_live_calls_tab():
                 )
                 if p2.button("Approve", key=f"ok_{call_id}", type="primary"):
                     if post_json("/api/approve", {"call_id": call_id}):
->>>>>>> 19ae017eee4118e8f66a7b904649d392682e181d
                         st.rerun()
                 st.divider()
 
@@ -858,10 +757,16 @@ def render_live_calls_tab():
                 m4.metric("Risk band", "—")
 
             if scoring_available:
-                st.markdown("**Risk timeline**")
-                fig = risk_chart(windows, scores, t0)
+                st.markdown("**Risk timeline — P(AI voice) per 4s window**")
+                st.markdown(score_readout(latest, synthetic=synthetic),
+                            unsafe_allow_html=True)
+                fig = risk_chart(windows, scores, t0,
+                                 overlay=SYNTH_WATERMARK if synthetic else None)
                 if fig:
-                    st.plotly_chart(fig, use_container_width=True, key=f"risk_{call_id}")
+                    st.plotly_chart(fig, use_container_width=True,
+                                    key=f"risk_{call_id}",
+                                    config={"displayModeBar": False})
+                    st.markdown(band_legend_md(), unsafe_allow_html=True)
                     st.caption(
                         f"Thresholds: Amber ≥ {AMBER_AT:.0%}, Red ≥ {RED_AT:.0%}. "
                         "Provisional — set on the clean benchmark, not yet recalibrated "
