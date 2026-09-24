@@ -277,6 +277,59 @@ def save_shard_atomic(emb_p, lab_p, files_p, emb, labels, files):
 # ===========================================================================
 # Main
 # ===========================================================================
+def _load_one(item):
+    """(fn, path, label) -> (fn, label, wav, None) or (fn, label, None, error).
+    Never raises, so one bad file cannot take a whole thread-pool batch down."""
+    fn, path, lab = item
+    try:
+        return fn, lab, load_audio_fixed(path), None
+    except Exception as e:                # noqa: BLE001 -- reported by caller
+        return fn, lab, None, e
+
+
+def _free_gpu(frontend):
+    """Best-effort CUDA cache release before the one-clip-at-a-time retry."""
+    try:
+        torch = frontend.get("torch") if isinstance(frontend, dict) else None
+        if torch is not None and torch.cuda.is_available():
+            torch.cuda.empty_cache()
+    except Exception:
+        pass
+
+
+def _apply_file_list(manifest, list_path):
+    """Keep only the manifest rows named in list_path, in manifest (sorted) order.
+
+    Names are matched without their extension, so a list written from
+    'x.wav' filenames selects the row 'x'. A name that is not in the manifest
+    stops the run: a silently shorter subset is how a planned sample turns into
+    a biased one.
+    """
+    lp = Path(list_path)
+    if not lp.exists():
+        sys.exit(f"FATAL: --file-list not found: {lp.resolve()}")
+    wanted = []
+    for line in lp.read_text(encoding="utf-8").splitlines():
+        t = line.strip()
+        if t and not t.startswith("#"):
+            wanted.append(Path(t).stem if Path(t).suffix.lower() in (".wav", ".flac") else t)
+    if not wanted:
+        sys.exit(f"FATAL: --file-list is empty: {lp.resolve()}")
+    dup = len(wanted) - len(set(wanted))
+    if dup:
+        sys.exit(f"FATAL: --file-list has {dup} duplicate name(s): {lp.resolve()}")
+    have = {fn for fn, _, _ in manifest}
+    missing = [w for w in wanted if w not in have]
+    if missing:
+        sys.exit(f"FATAL: {len(missing)} of {len(wanted)} names in --file-list are "
+                 f"not in the manifest, e.g. {missing[:5]}. Wrong folder or list?")
+    keep = set(wanted)
+    out = [row for row in manifest if row[0] in keep]
+    print(f"--file-list: {len(out)} of {len(manifest)} files selected "
+          f"from {lp.name}")
+    return out
+
+
 def run(args, _load_frontend=load_frontend, _embed_batch=embed_batch) -> int:
     # progress bar is optional -- degrade gracefully if tqdm is missing
     try:
@@ -305,6 +358,8 @@ def run(args, _load_frontend=load_frontend, _embed_batch=embed_batch) -> int:
     out_dir.mkdir(parents=True, exist_ok=True)
 
     manifest = build_manifest(split, args)
+    if getattr(args, "file_list", None):
+        manifest = _apply_file_list(manifest, args.file_list)
     if args.limit:
         manifest = manifest[: args.limit]
     total = len(manifest)
@@ -338,45 +393,86 @@ def run(args, _load_frontend=load_frontend, _embed_batch=embed_batch) -> int:
     frontend = _load_frontend(args.model, device)
 
     succeeded = skipped_bad = 0
+    failed_shards = []
     pbar = tqdm(total=total, initial=done_files, unit="file", desc=f"{split}")
 
-    for s in todo_shards:
-        block = manifest[s * shard_size:(s + 1) * shard_size]
+    # Audio decoding (an ffmpeg subprocess per file) is the bottleneck, not the
+    # GPU. With --workers > 1 a thread pool decodes a whole shard in parallel
+    # AND starts decoding the next shard while the GPU embeds this one. Rows
+    # come back in manifest order either way, so the output is identical.
+    from concurrent.futures import ThreadPoolExecutor
+    workers = max(1, int(getattr(args, "workers", 1) or 1))
+    pool = ThreadPoolExecutor(max_workers=workers) if workers > 1 else None
+
+    def _submit(s_idx):
+        blk = manifest[s_idx * shard_size:(s_idx + 1) * shard_size]
+        if pool is None:
+            return blk                       # decoded lazily, in order
+        return [pool.submit(_load_one, item) for item in blk]
+
+    def _collect(pending):
+        if pool is None:
+            return [_load_one(item) for item in pending]
+        return [f.result() for f in pending]
+
+    pending = _submit(todo_shards[0])
+    for k, s in enumerate(todo_shards):
+        loaded = _collect(pending)
+        if k + 1 < len(todo_shards):
+            pending = _submit(todo_shards[k + 1])   # prefetch while GPU works
         emb_p, lab_p, files_p = shard_paths(out_dir, s)
 
+        # an unreadable FILE is skipped for good (retrying will not fix it);
+        # everything that decoded goes on to the forward pass
+        ok = []
+        for fn, lab, wav, err in loaded:
+            if err is not None:
+                skipped_bad += 1
+                print(f"\n  ! SKIP {fn}: {type(err).__name__}: {err}")
+                pbar.update(1)
+            else:
+                ok.append((fn, lab, wav))
+
         embs, labels, files = [], [], []
-        # process the block in mini-batches of --batch
-        for i in range(0, len(block), args.batch):
-            mb = block[i:i + args.batch]
-            wavs, keep = [], []
-            for fn, path, lab in mb:
-                try:
-                    wavs.append(load_audio_fixed(path))
-                    keep.append((fn, lab))
-                except Exception as e:            # one bad file must not stop us
-                    skipped_bad += 1
-                    print(f"\n  ! SKIP {fn}: {type(e).__name__}: {e}")
-                    pbar.update(1)
-            if not wavs:
-                continue
+        shard_failed = False
+        for i in range(0, len(ok), args.batch):
+            mb = ok[i:i + args.batch]
+            wavs = [w for _, _, w in mb]
             try:
-                vecs = _embed_batch(frontend, wavs)
+                vecs = list(_embed_batch(frontend, wavs))
             except Exception as e:
-                # a whole-batch failure (e.g. transient OOM): log, skip block,
-                # do NOT write the shard, so it retries cleanly next run
-                skipped_bad += len(wavs)
-                print(f"\n  ! BATCH FAILED in shard {s}: "
-                      f"{type(e).__name__}: {e}")
-                traceback.print_exc()
-                for _ in wavs:
-                    pbar.update(1)
-                continue
-            for (fn, lab), v in zip(keep, vecs):
+                # A whole-batch failure is usually a transient CUDA OOM, which
+                # the SAME clips survive one at a time. Retry per clip. The old
+                # code logged "do NOT write the shard" and then wrote it anyway,
+                # with these rows silently missing and the shard marked done,
+                # so resume never came back for them.
+                print(f"\n  ! BATCH FAILED in shard {s} ({type(e).__name__}: {e}); "
+                      f"retrying {len(wavs)} clip(s) one at a time")
+                _free_gpu(frontend)
+                vecs = []
+                for fn, _, w in mb:
+                    try:
+                        vecs.append(_embed_batch(frontend, [w])[0])
+                    except Exception as e1:
+                        print(f"  ! clip {fn} failed alone too: "
+                              f"{type(e1).__name__}: {e1}")
+                        traceback.print_exc()
+                        shard_failed = True
+                        break
+                if shard_failed:
+                    break
+            for (fn, lab, _), v in zip(mb, vecs):
                 embs.append(v)
                 labels.append(lab)
                 files.append(fn)
                 succeeded += 1
                 pbar.update(1)
+
+        if shard_failed:
+            # leave NO sidecars, so the next run redoes this shard in full
+            failed_shards.append(s)
+            print(f"  ! shard {s} NOT written -- it will be redone on the next run")
+            continue
 
         emb_arr = (np.stack(embs).astype(np.float16) if embs
                    else np.empty((0, EMB_DIM), np.float16))
@@ -384,9 +480,12 @@ def run(args, _load_frontend=load_frontend, _embed_batch=embed_batch) -> int:
                           np.asarray(labels, np.int8), files)
         pbar.set_postfix(ok=succeeded, bad=skipped_bad)
 
+    if pool is not None:
+        pool.shutdown(wait=True)
     pbar.close()
     print(f"\n[{split}] DONE. succeeded={succeeded}  skipped(bad)={skipped_bad}  "
-          f"already_cached={done_files}  total={total}")
+          f"failed_shards={len(failed_shards)}  already_cached={done_files}  "
+          f"total={total}")
 
     # smoke-test convenience: show the shape the brief tells you to check
     emb0, _, _ = shard_paths(out_dir, todo_shards[0])
@@ -396,6 +495,11 @@ def run(args, _load_frontend=load_frontend, _embed_batch=embed_batch) -> int:
     if skipped_bad > total * 0.02:
         print(f"[{split}] NOTE: {skipped_bad} files were skipped (>2%). Check the "
               f"SKIP lines above -- that is more bad files than expected.")
+    if failed_shards:
+        print(f"[{split}] INCOMPLETE: {len(failed_shards)} shard(s) failed and were "
+              f"NOT written: {failed_shards[:20]}{' ...' if len(failed_shards) > 20 else ''}\n"
+              f"[{split}] Re-run the same command to redo them. Exit code 2.")
+        return 2
     return 0
 
 
@@ -434,6 +538,17 @@ def build_argparser():
                     help="only process the first N files (use 50 to smoke test)")
     ap.add_argument("--device", default=None,
                     help="force 'cuda' or 'cpu' (default: auto-detect)")
+    ap.add_argument("--file-list", default=None,
+                    help="text file, one name per line: extract ONLY these files "
+                         "from the manifest (matched on the name without its "
+                         "extension). Every listed name must exist, or the run "
+                         "stops. Use for seeded subsets, e.g. LibriSeVoc, where "
+                         "--limit would take the first N by sorted name instead.")
+    ap.add_argument("--workers", type=int, default=1,
+                    help="threads decoding audio in parallel, and prefetching the "
+                         "next shard while the GPU works (default 1 = sequential). "
+                         "Output is identical for any value; 4-8 is typically "
+                         "much faster, since decoding, not the GPU, is the bottleneck.")
     return ap
 
 
