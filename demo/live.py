@@ -286,6 +286,46 @@ class LiveMic:
             buf = np.fromiter(self.audio, dtype=np.float32, count=len(self.audio))
         return buf[-int(self.native_sr * seconds):]
 
+    def level(self, seconds: float = 0.35):
+        """(rms, peak) of the most recent `seconds` of audio.
+
+        Read straight off the capture buffer rather than inferred from the
+        scores, because it has to answer a question the scores cannot: when
+        nothing is being scored, is the microphone silent, or is it picking up
+        sound that never clears the silence gate? Those look identical on a
+        score timeline and need completely different fixes.
+        """
+        n = int(self.native_sr * seconds)
+        with self.lock:
+            if not self.audio:
+                return 0.0, 0.0
+            buf = np.fromiter(self.audio, dtype=np.float32, count=len(self.audio))
+        buf = buf[-n:]
+        if buf.size == 0:
+            return 0.0, 0.0
+        return float(np.sqrt(np.mean(buf.astype(np.float64) ** 2))), \
+            float(np.max(np.abs(buf)))
+
+    def envelope(self, seconds: float = 1.6, points: int = 64):
+        """Peak-per-bucket envelope of the recent tail, normalised to 0..1.
+
+        This is what the on-screen bubble is actually shaped by -- the real
+        captured audio, not a decorative animation. A bubble that wobbles while
+        the room is silent would be worse than no bubble at all.
+        """
+        n = int(self.native_sr * seconds)
+        with self.lock:
+            if not self.audio:
+                return np.zeros(points, dtype=float)
+            buf = np.fromiter(self.audio, dtype=np.float32, count=len(self.audio))
+        buf = buf[-n:]
+        if buf.size < points:
+            return np.zeros(points, dtype=float)
+        per = buf.size // points
+        env = np.abs(buf[:per * points].reshape(points, per)).max(axis=1)
+        peak = float(env.max())
+        return (env / peak) if peak > 0 else env
+
     def buffering(self) -> float:
         """0..1 -- how full the first 4 s window is. Before this hits 1.0 there
         is nothing honest to score, so the UI shows a filling state instead of

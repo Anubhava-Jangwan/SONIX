@@ -76,7 +76,34 @@ async function ensureOffscreen() {
 /* Start / stop                                                        */
 /* ------------------------------------------------------------------ */
 
+/* Drop any capture stream and offscreen document we might still be holding.
+ *
+ * chrome.tabCapture.getMediaStreamId() fails with "Cannot capture a tab with
+ * an active stream." when a previous stream is still live. That outlives the
+ * popup closing, the extension reloading and the tab navigating, because the
+ * stream belongs to the offscreen document rather than to any of those -- so
+ * once it happens the only cure used to be restarting Chrome.
+ */
+async function releaseCapture() {
+  try {
+    await chrome.runtime.sendMessage({ target: "offscreen", type: "stop" });
+  } catch {
+    /* no offscreen document listening — nothing to stop */
+  }
+  if (await hasOffscreen()) {
+    try {
+      await chrome.offscreen.closeDocument();
+    } catch {
+      /* already closing */
+    }
+  }
+}
+
 async function startCapture(serverUrl, model) {
+  // Always start from a clean slate, so a stream left over from a previous
+  // session cannot block this one.
+  await releaseCapture();
+
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   if (!tab) throw new Error("No active tab.");
   if (!/^https:\/\/meet\.google\.com\//.test(tab.url || "")) {
@@ -183,6 +210,24 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     return false;
   }
 
+  // Manual escape hatch for a stream Chrome still holds but we have lost
+  // track of. Works even when state.capturing is already false.
+  if (msg.type === "popup:forceStop") {
+    releaseCapture()
+      .then(() => {
+        state = {
+          ...state, capturing: false, callId: null, pairingCode: null,
+          callState: null, lastScore: null, scores: [], windows: 0,
+          error: null,
+        };
+        updateBadge();
+        pushToOverlay();
+        sendResponse({ ok: true });
+      })
+      .catch((e) => sendResponse({ ok: false, error: e.message }));
+    return true;
+  }
+
   // From the in-call side panel. Optimistic: the picker shows the new head
   // immediately, and model_changed from the server confirms it. A failure
   // arrives as a normal error message, which the panel already renders.
@@ -195,12 +240,50 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     return false;
   }
 
+  // Tear everything down, from the in-call panel rather than the popup.
+  if (msg.type === "overlay:stop") {
+    stopCapture();
+    return false;
+  }
+
+  // New pairing code, without touching the capture. The offscreen document
+  // recycles the call on its existing socket; see restartCall() there for why
+  // this cannot go through startCapture().
+  if (msg.type === "overlay:restart") {
+    state.pairingCode = null;
+    state.callState = null;
+    chrome.runtime.sendMessage({ target: "offscreen", type: "restart" });
+    pushToOverlay();
+    return false;
+  }
+
   // From the offscreen document
   if (msg.target === "background") {
+    // Relayed straight to the panel and returned early: this arrives 20x a
+    // second, and pushing the whole state object (score history included)
+    // at that rate would be wasteful and would redraw the panel needlessly.
+    if (msg.type === "level") {
+      state.rms = msg.rms;
+      state.peak = msg.peak;
+      if (state.tabId !== null) {
+        chrome.tabs
+          .sendMessage(state.tabId, {
+            type: "sonix:level", rms: msg.rms, peak: msg.peak,
+          })
+          .catch(() => { /* no content script on this page */ });
+      }
+      return false;
+    }
+
     if (msg.type === "call_started") {
       state.callId = msg.callId;
       state.pairingCode = msg.pairingCode;
       state.callState = "consent_pending";
+      // A new call_id is a new call: the graph belongs to the old one, and
+      // carrying its points forward would misattribute them.
+      state.scores = [];
+      state.lastScore = null;
+      state.windows = 0;
     } else if (msg.type === "call_state") {
       state.callState = msg.state;
     } else if (msg.type === "score") {

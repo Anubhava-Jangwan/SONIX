@@ -160,65 +160,111 @@ else:
 
     mic = _mic()
 
-    # run_every drives the redraw. Everything the fragment shows already
-    # exists in the deques before it runs, so a slow rerun delays the picture
-    # by a frame -- it never leaves a hole in the series.
-    @st.fragment(run_every=1.0)
-    def live_panel():
-        c1, c2, c3 = st.columns([2, 3, 3])
+    # The controls live OUTSIDE the auto-rerunning fragment, deliberately.
+    # A fragment with run_every replaces its DOM roughly once a second, and a
+    # real mouse click is not instantaneous -- press and release land either
+    # side of a redraw, the button node is swapped in between, and the click
+    # is never delivered. It looks exactly like a dead button, and it is only
+    # intermittent, which is worse. Nothing here needs the timer: the mic
+    # object lives in cache_resource, so a full rerun from one of these
+    # widgets re-reads the same running capture and the graph carries on.
+    c1, c2, c3 = st.columns([2, 3, 3])
 
-        with c1:
-            if mic.running:
-                if st.button("Stop", use_container_width=True, key="live_stop"):
-                    mic.stop()
-                    st.rerun(scope="fragment")
-            else:
-                if st.button("Start listening", type="primary",
-                             use_container_width=True, key="live_start"):
-                    k = (st.session_state.get("live_head")
-                         or list(models)[default_index(models)])
-                    mic.start(str(REPO / models[k][1]), k,
-                              device=st.session_state.get("live_dev"))
-                    st.rerun(scope="fragment")
+    with c1:
+        if mic.running:
+            if st.button("Stop", use_container_width=True, key="live_stop"):
+                mic.stop()
+                st.rerun()
+        else:
+            if st.button("Start listening", type="primary",
+                         use_container_width=True, key="live_start"):
+                k = (st.session_state.get("live_head")
+                     or list(models)[default_index(models)])
+                mic.start(str(REPO / models[k][1]), k,
+                          device=st.session_state.get("live_dev"))
+                st.rerun()
 
-        with c2:
-            # Selecting a head only writes an attribute the scorer reads on
-            # its next window. No restart, no cleared history.
-            k = st.selectbox("Head", list(models), key="live_head",
-                             index=default_index(models),
-                             format_func=lambda x: models[x][0],
-                             label_visibility="collapsed")
-            if mic.running and k != mic.model_key:
-                mic.ckpt, mic.model_key = str(REPO / models[k][1]), k
+    with c2:
+        # Selecting a head only writes an attribute the scorer reads on its
+        # next window. No restart, no cleared history.
+        k = st.selectbox("Head", list(models), key="live_head",
+                         index=default_index(models),
+                         format_func=lambda x: models[x][0],
+                         label_visibility="collapsed")
+        if mic.running and k != mic.model_key:
+            mic.ckpt, mic.model_key = str(REPO / models[k][1]), k
 
-        with c3:
-            if mic.error:
-                st.error(mic.error, icon=":material/error:")
-            elif not mic.running:
-                st.caption("Idle — nothing is being recorded.")
-            elif mic.warming:
-                st.caption("Loading the frozen 300M front-end — first start "
-                           "only, then heads swap instantly.")
-            elif mic.buffering() < 1.0:
-                st.caption(f"Filling the first 4 s window… "
-                           f"{mic.buffering():.0%}")
-            else:
-                st.caption(f"{mic.windows_scored} windows scored"
-                           + (f" · {mic.windows_dropped} dropped to stay live"
-                              if mic.windows_dropped else ""))
-
+    with c3:
         if not mic.running:
             devs = mic.input_devices()
             if devs:
                 names = dict(devs)
                 st.selectbox("Input device", [i for i, _ in devs],
                              key="live_dev", format_func=lambda i: names[i],
+                             label_visibility="collapsed",
                              help="A microphone records your own voice. A "
                                   "loopback device (Stereo Mix, What U Hear) "
                                   "records whoever is on the call — that is "
                                   "the side you want to screen for a clone.")
             else:
-                st.warning("No recording device found.", icon=":material/mic_off:")
+                st.warning("No recording device found.",
+                           icon=":material/mic_off:")
+
+    # Bands, outside the fragment for the same reason the buttons are: a
+    # slider you drag while the DOM is being replaced under you is unusable.
+    # They only re-derive bands from scores already computed, so moving one
+    # repaints instantly and re-scores nothing.
+    with st.expander("Band thresholds", expanded=False):
+        st.caption("Where AMBER and RED begin. These re-read scores that are "
+                   "already computed — nothing is sent through the model "
+                   "again, and the graph repaints immediately.")
+        threshold_controls("live_")
+
+    # Only the readout is on the timer. Everything it shows already exists in
+    # the deques before it runs, so a slow rerun delays the picture by a frame
+    # -- it never leaves a hole in the series.
+    @st.fragment(run_every=1.0)
+    def live_panel():
+        # --- is the mic actually hearing anything? -----------------------
+        if mic.running:
+            rms, _peak = mic.level()
+            hearing = rms > 0.003            # the server's silence floor
+            oc1, oc2 = st.columns([1, 2])
+            with oc1:
+                st.markdown(
+                    f'<div style="display:flex;justify-content:center">'
+                    f'{ui.siri_orb(mic.envelope(), rms, hearing)}</div>',
+                    unsafe_allow_html=True)
+            with oc2:
+                st.markdown(
+                    f'<div class="sx-eyebrow">Microphone</div>'
+                    f'<div style="font-size:19px;font-weight:600;margin-top:4px;'
+                    f'color:{ui.GREEN if hearing else ui.INK_3}">'
+                    + ("Hearing you" if hearing else "Silent")
+                    + '</div>'
+                    f'<div style="font-size:12.5px;color:{ui.INK_2};'
+                    f'margin-top:4px;line-height:1.5">'
+                    + ("Audio is above the gate — these windows reach the model."
+                       if hearing else
+                       "Below the silence gate. Windows this quiet are skipped "
+                       "before the model sees them, which is why the graph can "
+                       "sit still while the mic is open.")
+                    + '</div>' + ui.level_bar(rms),
+                    unsafe_allow_html=True)
+            st.write("")
+        if mic.error:
+            st.error(mic.error, icon=":material/error:")
+        elif not mic.running:
+            st.caption("Idle — nothing is being recorded.")
+        elif mic.warming:
+            st.caption("Loading the frozen 300M front-end — first start only, "
+                       "then heads swap instantly.")
+        elif mic.buffering() < 1.0:
+            st.caption(f"Filling the first 4 s window… {mic.buffering():.0%}")
+        else:
+            st.caption(f"{mic.windows_scored} windows scored"
+                       + (f" · {mic.windows_dropped} dropped to stay live"
+                          if mic.windows_dropped else ""))
 
         times, raw, keys = mic.series()
         if not raw:
@@ -429,3 +475,235 @@ for _title, _tone, _body in [
         f'margin-top:2px">{_body}</div></div></div>', pad="14px 18px"),
         unsafe_allow_html=True)
     st.write("")
+
+st.markdown('<hr class="sx-rule">', unsafe_allow_html=True)
+
+# ======================================================================
+# 6 - CHROME EXTENSION
+# ======================================================================
+# Steps mirror extension/README.md. If that file changes, change this too --
+# a wrong install step reads as a broken extension.
+st.markdown(ui.anchor("extension", "Run it inside a Google Meet call",
+                      "Chrome extension"), unsafe_allow_html=True)
+st.markdown('<div class="sx-lede">The extension streams the Meet tab\'s audio '
+            'to the local SONIX server and paints the same live graph over '
+            'the call, in a side panel. It captures the <b>other</b> '
+            'participants — the people calling you — not your microphone.'
+            '</div>', unsafe_allow_html=True)
+st.write("")
+
+_ext_dir = REPO / "extension"
+
+SERVER = "http://localhost:8000"
+
+
+@st.cache_resource
+def _http():
+    """One pooled session for every poll on this page.
+
+    A fresh requests.get() per poll opens a new TCP connection each time; at
+    one poll every couple of seconds that is pure latency added to a render
+    the user is waiting on."""
+    import requests
+    s = requests.Session()
+    s.headers["Connection"] = "keep-alive"
+    return s
+
+
+def _get(path: str, timeout: float = 0.6):
+    """GET from the detection server, or None.
+
+    The timeout is deliberately short. This runs inside an auto-rerunning
+    fragment, and Streamlit dims the whole page while the script is executing
+    -- so a 2 s timeout against a server that is down meant the page spent
+    every other second greyed out and unusable. Localhost answers in
+    milliseconds or it is not answering at all.
+    """
+    try:
+        return _http().get(f"{SERVER}{path}", timeout=timeout).json()
+    except Exception:
+        return None
+
+
+@st.cache_data(ttl=3.0, show_spinner=False)
+def _server_status():
+    """Cached: this sits at page level and would otherwise re-probe the server
+    on every single rerun, including every tick of the live-mic fragment."""
+    return _get("/api/status", timeout=0.6)
+
+
+_j = _server_status()
+_srv_up = _j is not None
+_srv_detail = (
+    f"mode {_j.get('mode', '?')} · "
+    f"scoring {'available' if _j.get('scoring_available') else 'OFF'} · "
+    f"{_j.get('active_calls', 0)} active call(s)"
+    if _srv_up else "Not reachable on http://localhost:8000"
+)
+
+_c1, _c2 = st.columns(2)
+with _c1:
+    st.markdown(ui.stat("Extension folder",
+                        "present" if _ext_dir.exists() else "missing",
+                        str(_ext_dir),
+                        ui.GREEN if _ext_dir.exists() else ui.RED),
+                unsafe_allow_html=True)
+with _c2:
+    st.markdown(ui.stat("Detection server",
+                        "running" if _srv_up else "not running",
+                        _srv_detail, ui.GREEN if _srv_up else ui.AMBER),
+                unsafe_allow_html=True)
+st.write("")
+
+if not _srv_up:
+    st.warning("The extension is only a client — with no server on port 8000 "
+               "it captures audio and scores nothing. Start it first.",
+               icon=":material/warning:")
+
+st.markdown("**1 — Start the detection server** (separate terminal, kept running)")
+st.code(f"cd {REPO}\n"
+        "python -m realtime.server --ckpt outputs/models/head_v3.pt "
+        "--ws-port 8000 --mode webrtc", language="bash")
+st.caption("Swap `--ckpt` for any head under `outputs/models/`. Without a "
+           "`--ckpt` the server runs but reports `scoring_available: false`, "
+           "and the panel says so instead of inventing a number.")
+
+st.markdown("**2 — Approve the call, right here.** The server refuses to "
+            "buffer or score a single sample until the call's pairing code is "
+            "approved; that gate is enforced server-side, not by the "
+            "extension. This panel polls the server every two seconds, so a "
+            "call shows up here the moment the extension starts one.")
+
+
+def _approve(call_id: str) -> tuple[bool, str]:
+    try:
+        r = _http().post(f"{SERVER}/api/approve",
+                         json={"call_id": call_id}, timeout=2)
+        if r.status_code == 200:
+            return True, ""
+        return False, f"HTTP {r.status_code}: {r.text[:120]}"
+    except Exception as exc:
+        return False, str(exc)
+
+
+@st.fragment(run_every=3.0)
+def pending_calls():
+    """Live list of calls waiting on consent, with an Approve button each.
+
+    Replaces the operator dashboard that used to live in realtime/live_ui.py.
+    Polled rather than pushed because this page has no socket to the server.
+    Three seconds is well inside the 120 s a pairing code lives for, and every
+    tick costs a render -- Streamlit greys the page out while the script runs,
+    so polling faster makes the page feel worse, not more live.
+    """
+    data = _get("/api/telemetry", timeout=0.6)
+    if data is None:
+        st.warning("Detection server is not reachable on port 8000 — nothing "
+                   "can be approved until it is running.",
+                   icon=":material/cloud_off:")
+        return
+    calls = data.get("calls", {})
+
+    waiting = {k: v for k, v in calls.items()
+               if v.get("state") == "consent_pending"}
+    running = {k: v for k, v in calls.items()
+               if v.get("state") not in ("consent_pending", "ended")}
+
+    if not waiting and not running:
+        st.info("No call yet. Press **Start monitoring** in the extension and "
+                "it will appear here within a few seconds.",
+                icon=":material/hourglass_empty:")
+        return
+
+    for cid, c in waiting.items():
+        code = c.get("pairing_code") or "------"
+        left = int(c.get("pairing_expires_in") or 0)
+        a, b = st.columns([3, 1])
+        with a:
+            st.markdown(
+                f'<div class="sx-card" style="padding:14px 18px">'
+                f'<div class="sx-eyebrow">{cid} &middot; waiting for consent</div>'
+                f'<div style="font-size:34px;font-weight:700;letter-spacing:.14em;'
+                f'font-feature-settings:\'tnum\' 1;color:{ui.AMBER};'
+                f'line-height:1.2">{code}</div>'
+                f'<div class="sx-sub">'
+                + (f"expires in {left}s" if left > 0 else
+                   "<b>expired</b> — press New code in the extension panel")
+                + "</div></div>", unsafe_allow_html=True)
+        with b:
+            st.write("")
+            if st.button("Approve", key=f"appr_{cid}", type="primary",
+                         use_container_width=True, disabled=left <= 0):
+                ok, err = _approve(cid)
+                if ok:
+                    # Deliberately NOT st.rerun(). A full rerun re-executes
+                    # this whole page -- model discovery, the live-mic
+                    # fragment, every chart -- and Streamlit blanks the view
+                    # while it does, which is the dark flash. The next poll is
+                    # at most three seconds away and repaints this row anyway.
+                    st.success(f"Approved {cid} — scoring starts now.",
+                               icon=":material/check_circle:")
+                else:
+                    st.error(f"Approve failed — {err}", icon=":material/error:")
+
+    for cid, c in running.items():
+        rb = c.get("ringbuffer") or {}
+        st.success(
+            f"**{cid}** — {c.get('state', '?').upper()} · head "
+            f"`{c.get('model', '?')}` · {rb.get('windows_emitted', 0)} windows "
+            f"emitted · {c.get('duration', 0):.0f}s",
+            icon=":material/check_circle:")
+
+
+pending_calls()
+
+with st.expander("Skip the consent gate entirely (demo only)"):
+    st.markdown("Start the server with `--auto-approve` and calls begin "
+                "scoring the moment they connect — nothing to approve.")
+    st.code(f"cd {REPO}\n"
+            "python -m realtime.server --ckpt outputs/models/head_v3.pt "
+            "--ws-port 8000 --mode webrtc --auto-approve", language="bash")
+    st.caption("This bypasses a real safety feature. Fine for a demo you "
+               "control; not something to leave on.")
+
+st.markdown("**3 — Load the extension into Chrome**")
+st.markdown(
+    f"1. Open `chrome://extensions` (Chrome or Edge 116+)\n"
+    f"2. Turn on **Developer mode** — top-right toggle\n"
+    f"3. Click **Load unpacked**\n"
+    f"4. Select this exact folder: `{_ext_dir}`\n"
+    f"5. Pin the SONIX icon so it stays visible during the call")
+
+st.markdown("**4 — Use it on a call**")
+st.markdown(
+    "1. Join a Google Meet call, then **reload the tab** — the content script "
+    "only injects on page load, so an already-open Meet tab will not show the "
+    "panel until you refresh it.\n"
+    "2. **Tell the other participants they are being monitored.** The panel is "
+    "visible on your screen only; Meet gives them no indication.\n"
+    "3. Click the SONIX icon → **Start monitoring**.\n"
+    "4. Approve the six-digit pairing code in the live server UI. Codes expire "
+    "after 120 seconds.\n"
+    "5. The side panel appears on the right with the verdict, the live graph "
+    "and a head picker. Changing the head does not restart the call.\n"
+    "6. **Stop monitoring** ends the call and writes the audit record to "
+    "`outputs/calls/`.")
+
+with st.expander("It did not work — the four usual causes"):
+    st.markdown(
+        "- **Panel never appears.** The content script injects only on "
+        "`https://meet.google.com/*`, and only at page load. Reload the Meet "
+        "tab after installing.\n"
+        "- **\"Cannot reach the SONIX server.\"** Nothing is on port 8000. "
+        "Open `http://localhost:8000/api/status` to check.\n"
+        "- **Stuck on CONSENT_PENDING.** The pairing code was never approved, "
+        "or it expired after 120 s. Approve it and start again.\n"
+        "- **The meeting went silent.** Tab capture mutes the tab; "
+        "`source.connect(ctx.destination)` in `offscreen.js` is what re-plays "
+        "it. Inspect the offscreen document from `chrome://extensions` → "
+        "SONIX → **Inspect views: offscreen.html**.")
+
+st.caption("Tab audio is the mixed output of the call: with three people "
+           "speaking you get all three in one stream, and a score applies to "
+           "the 4-second window, not to a named participant. Per-speaker "
+           "attribution needs diarisation, which SONIX does not do.")

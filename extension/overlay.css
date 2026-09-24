@@ -1,206 +1,424 @@
 /* SONIX in-call side panel.
 
-   Tokens mirror popup.css (dark variants) and demo/theme.py, so the panel,
-   the popup and the Streamlit dashboard read as one product.
+   Tokens are the project palette from demo/ui.py, so the panel, the popup and
+   the Streamlit dashboard read as one product.
 
    Half-transparent on purpose: this sits on top of a live video call and must
    never hide a face. Everything is a translucent surface over a blur.
 
    NOTE the pointer-events discipline. The old overlay was a read-only chip and
-   set pointer-events:none on the whole thing. This panel has a model picker in
-   it, so the panel itself takes clicks -- but the page underneath must stay
+   set pointer-events:none on the whole thing. This panel has controls in it,
+   so the panel itself takes clicks -- but the page underneath must stay
    usable, which is why the panel is a fixed column at the edge rather than a
    full-viewport layer. A translucent layer that spans the page and still eats
    clicks is the single worst thing you can put over someone's call UI: the
    controls stay visible through it, so they look clickable and are not. */
 
 #sonix-panel {
+  --bg: #0A0B10;
+  --surface: rgba(255, 255, 255, .045);
+  --raised: rgba(255, 255, 255, .075);
+  --edge: rgba(255, 255, 255, .10);
+  --edge-c: rgba(255, 255, 255, .20);
+  --ink: #F2F4F8;
+  --ink-2: #A8B0C2;
+  --ink-3: #7A8299;
+  --accent: #7C8CFF;
+  --accent-2: #22D3EE;
+  --good: #34D399;
+  --warn: #FBBF24;
+  --crit: #FB7185;
+
   position: fixed;
   top: 0;
   right: 0;
   height: 100vh;
-  width: 336px;
+  width: 344px;
   z-index: 2147483647;
   box-sizing: border-box;
   display: flex;
   flex-direction: column;
-  gap: 12px;
-  padding: 14px 15px;
+  gap: 13px;
+  padding: 16px 16px 18px;
 
-  background: rgba(12, 16, 17, .55);
-  backdrop-filter: blur(18px) saturate(140%);
-  -webkit-backdrop-filter: blur(18px) saturate(140%);
-  border-left: 1px solid rgba(255, 255, 255, .10);
-  box-shadow: -18px 0 46px -22px rgba(0, 0, 0, .8);
+  background:
+    radial-gradient(420px 220px at 110% -6%, rgba(124, 140, 255, .18), transparent 64%),
+    radial-gradient(360px 200px at -20% 8%, rgba(34, 211, 238, .10), transparent 62%),
+    rgba(10, 11, 16, .58);
+  backdrop-filter: blur(22px) saturate(150%);
+  -webkit-backdrop-filter: blur(22px) saturate(150%);
+  border-left: 1px solid var(--edge);
+  box-shadow: -22px 0 60px -26px rgba(0, 0, 0, .9);
 
-  color: #eef4f4;
-  font: 13px/1.45 "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  color: var(--ink);
+  font: 13px/1.5 "Inter", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  -webkit-font-smoothing: antialiased;
   pointer-events: auto;
   user-select: none;
+
+  /* The panel now carries a visualiser, a graph, sliders, a picker and
+     buttons. On a short window that exceeds 100vh, and a clipped Stop button
+     is not acceptable on a monitoring tool. */
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, .18) transparent;
 }
+
+#sonix-panel::-webkit-scrollbar { width: 8px; }
+#sonix-panel::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, .16);
+  border-radius: 4px;
+}
+#sonix-panel::-webkit-scrollbar-track { background: transparent; }
+
+#sonix-panel * { box-sizing: border-box; }
 
 #sonix-panel.sonix-collapsed {
-  width: 46px;
-  padding: 14px 8px;
+  width: 50px;
+  padding: 16px 9px;
+  gap: 0;
 }
 
-#sonix-panel.sonix-collapsed .sonix-hide-collapsed {
-  display: none;
-}
+#sonix-panel.sonix-collapsed .sonix-hide-collapsed { display: none; }
 
 /* --- header ------------------------------------------------------------ */
 #sonix-panel .sonix-head {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 9px;
   flex: none;
 }
 
 #sonix-panel .sonix-dot {
-  width: 8px;
-  height: 8px;
+  width: 9px;
+  height: 9px;
   border-radius: 50%;
-  background: #7e8d8d;
+  background: var(--ink-3);
   flex: none;
+  transition: background .3s ease, box-shadow .3s ease;
 }
 
 #sonix-panel .sonix-name {
-  font-size: 10px;
-  letter-spacing: .14em;
+  font-size: 10.5px;
+  letter-spacing: .16em;
   text-transform: uppercase;
-  color: #9fb0b0;
-  font-weight: 600;
+  font-weight: 700;
+  background: linear-gradient(96deg, var(--ink) 4%, var(--accent) 64%, var(--accent-2) 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
 }
 
 #sonix-panel .sonix-toggle {
   margin-left: auto;
-  background: transparent;
-  border: 1px solid rgba(255, 255, 255, .14);
-  color: #b3c1c1;
-  border-radius: 7px;
-  width: 24px;
-  height: 24px;
+  background: var(--surface);
+  border: 1px solid var(--edge);
+  color: var(--ink-2);
+  border-radius: 8px;
+  width: 26px;
+  height: 26px;
   cursor: pointer;
   font-size: 13px;
   line-height: 1;
   padding: 0;
   flex: none;
+  transition: background .14s, color .14s;
 }
 
 #sonix-panel .sonix-toggle:hover {
-  background: rgba(255, 255, 255, .08);
-  color: #eef4f4;
+  background: var(--raised);
+  color: var(--ink);
 }
 
 /* --- verdict ----------------------------------------------------------- */
 #sonix-panel .sonix-verdict {
-  border: 1px solid rgba(255, 255, 255, .10);
-  border-left: 3px solid #7e8d8d;
-  border-radius: 11px;
-  background: rgba(255, 255, 255, .04);
-  padding: 11px 13px;
+  position: relative;
+  overflow: hidden;
+  border: 1px solid var(--edge);
+  border-radius: 15px;
+  background: linear-gradient(180deg, var(--raised), var(--surface));
+  padding: 14px 16px;
   flex: none;
 }
 
+/* The band colour as a soft wash behind the word, set from JS. */
+#sonix-panel .sonix-verdict::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(300px 120px at 0% 0%,
+              var(--band-glow, transparent), transparent 72%);
+  pointer-events: none;
+}
+
+#sonix-panel .sonix-rail {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 3px;
+  background: var(--ink-3);
+  transition: background .3s ease;
+}
+
 #sonix-panel .sonix-word {
-  font-size: 25px;
+  position: relative;
+  font-size: 27px;
   font-weight: 700;
   letter-spacing: -.02em;
-  line-height: 1.1;
+  line-height: 1.12;
   color: #cfdada;
 }
 
 #sonix-panel .sonix-pct {
-  font-size: 12px;
-  color: #9fb0b0;
+  position: relative;
+  font-size: 11.5px;
+  color: var(--ink-3);
   font-variant-numeric: tabular-nums;
-  margin-top: 2px;
+  margin-top: 4px;
+  letter-spacing: .04em;
 }
 
 #sonix-panel .sonix-sub {
+  position: relative;
   font-size: 11.5px;
-  color: #b3c1c1;
-  margin-top: 6px;
+  color: var(--ink-2);
+  margin-top: 8px;
+  line-height: 1.5;
+}
+
+/* --- voice activity ----------------------------------------------------- */
+#sonix-panel .sonix-voice {
+  flex: none;
+  border: 1px solid var(--edge);
+  border-radius: 15px;
+  background: linear-gradient(180deg, rgba(0, 0, 0, .30), rgba(0, 0, 0, .14));
+  padding: 6px 12px 10px;
+}
+
+#sonix-panel .sonix-orb {
+  display: block;
+  width: 100%;
+  height: 78px;
+}
+
+#sonix-panel .sonix-voice-stat {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 10.5px;
+  letter-spacing: .04em;
+  color: var(--ink-3);
+}
+
+#sonix-panel .sonix-vdot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--ink-3);
+  flex: none;
+  transition: background .2s ease, box-shadow .2s ease;
+}
+
+#sonix-panel .sonix-vdot.on {
+  background: var(--accent-2);
+  box-shadow: 0 0 0 4px rgba(34, 211, 238, .16);
+}
+
+#sonix-panel .sonix-vtext.on { color: var(--ink-2); }
+
+/* --- threshold sliders --------------------------------------------------- */
+#sonix-panel .sonix-slider { margin-bottom: 9px; }
+
+#sonix-panel .sonix-slider-top {
+  display: flex;
+  justify-content: space-between;
+  font-size: 11px;
+  color: var(--ink-3);
+  margin-bottom: 5px;
+}
+
+#sonix-panel .sonix-slider-top b {
+  color: var(--ink-2);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+#sonix-panel .sonix-range {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 4px;
+  border-radius: 3px;
+  background: rgba(255, 255, 255, .13);
+  outline: none;
+  cursor: pointer;
+}
+
+#sonix-panel .sonix-range::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--warn);
+  border: 2px solid #0A0B10;
+  box-shadow: 0 0 0 3px rgba(251, 191, 36, .22);
+  transition: transform .12s;
+}
+
+#sonix-panel .sonix-range-red::-webkit-slider-thumb {
+  background: var(--crit);
+  box-shadow: 0 0 0 3px rgba(251, 113, 133, .22);
+}
+
+#sonix-panel .sonix-range::-webkit-slider-thumb:hover { transform: scale(1.14); }
+
+#sonix-panel .sonix-range:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
 }
 
 /* --- graph ------------------------------------------------------------- */
 #sonix-panel .sonix-chartwrap {
   position: relative;
   flex: none;
-  border: 1px solid rgba(255, 255, 255, .09);
-  border-radius: 11px;
-  background: rgba(0, 0, 0, .22);
-  padding: 8px 8px 4px;
+  border: 1px solid var(--edge);
+  border-radius: 15px;
+  background: linear-gradient(180deg, rgba(0, 0, 0, .34), rgba(0, 0, 0, .18));
+  padding: 11px 11px 6px;
 }
 
 #sonix-panel canvas {
   display: block;
   width: 100%;
-  height: 132px;
+  height: 146px;
 }
 
 #sonix-panel .sonix-axis {
   display: flex;
   justify-content: space-between;
-  font-size: 10px;
-  color: #7e8d8d;
-  margin-top: 2px;
+  font-size: 9.5px;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+  margin-top: 4px;
   font-variant-numeric: tabular-nums;
 }
 
 /* --- controls ---------------------------------------------------------- */
 #sonix-panel .sonix-label {
-  font-size: 10px;
-  letter-spacing: .12em;
+  font-size: 9.5px;
+  letter-spacing: .13em;
   text-transform: uppercase;
-  color: #7e8d8d;
-  font-weight: 600;
-  margin-bottom: 5px;
+  color: var(--ink-3);
+  font-weight: 700;
+  margin-bottom: 6px;
 }
 
 #sonix-panel select {
   width: 100%;
-  box-sizing: border-box;
-  background: rgba(0, 0, 0, .38);
-  color: #eef4f4;
-  border: 1px solid rgba(255, 255, 255, .16);
-  border-radius: 8px;
-  padding: 7px 9px;
-  font: inherit;
-  font-size: 12.5px;
+  background: rgba(0, 0, 0, .34);
+  color: var(--ink);
+  border: 1px solid var(--edge-c);
+  border-radius: 10px;
+  padding: 9px 30px 9px 11px;
+  font: 500 12.5px "Inter", system-ui, sans-serif;
   cursor: pointer;
+  appearance: none;
+  background-image:
+    linear-gradient(45deg, transparent 50%, var(--ink-3) 50%),
+    linear-gradient(135deg, var(--ink-3) 50%, transparent 50%);
+  background-position: calc(100% - 16px) calc(50% + 1px), calc(100% - 11px) calc(50% + 1px);
+  background-size: 5px 5px, 5px 5px;
+  background-repeat: no-repeat;
+  transition: border-color .14s;
 }
 
+#sonix-panel select:hover { border-color: var(--accent); }
+
 #sonix-panel select:focus-visible {
-  outline: 2px solid #3fc2ce;
+  outline: 2px solid var(--accent);
   outline-offset: 1px;
 }
 
-#sonix-panel .sonix-meta {
-  margin-top: auto;
-  font-size: 11px;
-  color: #7e8d8d;
+/* --- stop / restart ---------------------------------------------------- */
+#sonix-panel .sonix-btns {
   display: flex;
-  flex-direction: column;
-  gap: 3px;
+  gap: 8px;
   flex: none;
 }
 
+#sonix-panel .sonix-btn {
+  flex: 1;
+  background: var(--surface);
+  color: var(--ink);
+  border: 1px solid var(--edge-c);
+  border-radius: 10px;
+  padding: 9px 10px;
+  font: 600 12.5px "Inter", system-ui, sans-serif;
+  cursor: pointer;
+  transition: background .14s, border-color .14s, transform .14s, color .14s;
+}
+
+#sonix-panel .sonix-btn:hover {
+  background: var(--raised);
+  border-color: var(--accent);
+  transform: translateY(-1px);
+}
+
+#sonix-panel .sonix-btn:active { transform: translateY(0); }
+
+#sonix-panel .sonix-btn-stop {
+  color: var(--crit);
+  border-color: rgba(251, 113, 133, .36);
+  background: rgba(251, 113, 133, .10);
+}
+
+#sonix-panel .sonix-btn-stop:hover {
+  background: rgba(251, 113, 133, .2);
+  border-color: rgba(251, 113, 133, .6);
+}
+
+/* --- meta -------------------------------------------------------------- */
+#sonix-panel .sonix-meta {
+  margin-top: auto;
+  font-size: 10.5px;
+  color: var(--ink-3);
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  flex: none;
+  padding-top: 13px;
+  border-top: 1px solid var(--edge);
+}
+
+#sonix-panel .sonix-meta > div {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+}
+
 #sonix-panel .sonix-meta b {
-  color: #b3c1c1;
+  color: var(--ink-2);
   font-weight: 600;
   font-variant-numeric: tabular-nums;
 }
 
 #sonix-panel .sonix-err {
   font-size: 11.5px;
-  color: #f0685f;
-  border: 1px solid rgba(240, 104, 95, .4);
-  background: rgba(240, 104, 95, .10);
-  border-radius: 8px;
-  padding: 7px 9px;
+  color: var(--crit);
+  border: 1px solid rgba(251, 113, 133, .4);
+  background: rgba(251, 113, 133, .10);
+  border-radius: 10px;
+  padding: 9px 11px;
+  line-height: 1.45;
 }
 
 @media (prefers-reduced-motion: no-preference) {
-  #sonix-panel { transition: width .16s ease; }
+  #sonix-panel { transition: width .18s cubic-bezier(.16, 1, .3, 1); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  #sonix-panel, #sonix-panel * { transition-duration: .001ms !important; }
 }

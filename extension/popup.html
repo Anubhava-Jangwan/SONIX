@@ -15,8 +15,9 @@
   </div>
 
   <div id="pairing" class="pairing" hidden>
-    <div class="k">Pairing code — approve in the dashboard</div>
+    <div class="k">Pairing code</div>
     <div class="code" id="code">------</div>
+    <div class="hint" id="codeHint">Approve it on the SONIX dashboard — click to copy.</div>
   </div>
 
   <dl class="stats">
@@ -26,17 +27,31 @@
   </dl>
 
   <label class="field">
-    <span>Server</span>
-    <input id="server" type="text" value="http://localhost:8000" spellcheck="false">
+    <span class="field-head">
+      <span class="dot" id="serverDot"></span>
+      <span>Server</span>
+      <button type="button" class="linkbtn" id="serverReset">reset</button>
+    </span>
+    <input id="server" type="text" value="http://localhost:8000" spellcheck="false"
+           autocomplete="off">
   </label>
+  <p class="band-sub" id="serverMsg" style="margin:-6px 0 11px;font-size:10.5px"></p>
 
   <label class="field">
-    <span>Model</span>
+    <span class="field-head"><span>Detection head</span></span>
     <select id="model"><option value="">Default</option></select>
   </label>
 
   <button id="toggle">Start monitoring</button>
+
+  <!-- Separate from the toggle on purpose. The toggle is the normal
+       lifecycle; this one exists for when Chrome still holds a capture
+       stream the extension has lost track of, which is what produces
+       "Cannot capture a tab with an active stream." -->
+  <button id="forceStop" class="ghost">Force-stop capture stream</button>
+
   <p class="err" id="err" hidden></p>
-  <p class="note">Captures this tab's audio — the other participants, not your microphone. Tell them they are being monitored.</p>
+  <p class="note">Captures this tab's audio — the other participants, not your
+    microphone. Tell them they are being monitored.</p>
 </div>
 <script src="popup.js"></script>

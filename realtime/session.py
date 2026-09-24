@@ -396,6 +396,14 @@ class Session:
         """Everything the live dashboard needs for one call, in one payload."""
         rb = self.ringbuffer.stats() if hasattr(self.ringbuffer, "stats") else {}
         vd = self.vad.stats() if hasattr(self.vad, "stats") else {}
+        # The measured level of the most recent window, next to the pass/fail
+        # counts. Without it, "0 windows passed" is unactionable: you cannot
+        # tell a silent call from an energy floor set too high for this source,
+        # and tab audio from Meet arrives far quieter than close-mic speech.
+        vd = {**vd, "last": dict(getattr(self.vad, "last_stats", {}) or {}),
+              "threshold_energy": float(getattr(self.vad, "threshold_energy", 0.0)),
+              "zcr_ceiling": float(getattr(self.vad, "zcr_ceiling", 0.0)),
+              "min_speech_ratio": float(getattr(self.vad, "min_speech_ratio", 0.0))}
         return {
             "call_id": self.call_id,
             "caller": self.metadata.caller,

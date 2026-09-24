@@ -412,7 +412,13 @@ class SonicServer:
                 return
         model_key = requested or (self.engine.default_key if not self.mock else None)
 
-        call_id = f"mic_{datetime.now().strftime('%Y%m%dT%H%M%S')}"
+        # Microseconds, matching the upload path below. Second resolution was
+        # survivable while calls were minted by hand, but the panel's "New
+        # code" button ends a call and starts another back to back -- two mic
+        # calls inside the same second is now the normal case, not a fluke,
+        # and a collision silently overwrites self.sessions[call_id] and
+        # collides in the audit record.
+        call_id = f"mic_{datetime.now().strftime('%Y%m%dT%H%M%S_%f')}"
         pairing_code = self.pairing_manager.generate()
 
         # Browsers report ctx.sampleRate, which is one of a small known set.

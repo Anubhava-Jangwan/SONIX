@@ -197,6 +197,103 @@ def verdict(band: str, score: float, model: str, share: float) -> str:
     </div>"""
 
 
+def siri_orb(env, rms: float, hearing: bool, size: int = 168) -> str:
+    """A Siri-style bubble whose rim is deformed by the live audio envelope.
+
+    Deliberately driven by real samples rather than a CSS keyframe loop. Two
+    reasons. A decorative animation would wobble happily through a silent room,
+    which is exactly the situation this widget exists to expose. And a Streamlit
+    fragment replaces its DOM on every tick, so any CSS animation would restart
+    each second and visibly stutter -- here the motion IS the audio changing,
+    so it never restarts and never lies.
+    """
+    import numpy as _np
+
+    e = _np.asarray(env, dtype=float).reshape(-1)
+    if e.size < 8:
+        e = _np.zeros(48)
+
+    cx = cy = size / 2
+    base = size * 0.24
+    # Quiet speech should still be visible, so the rim gain is compressed.
+    gain = size * 0.13 * float(min(1.0, (rms / 0.05) ** 0.5)) if rms > 0 else 0.0
+
+    rings, n = [], e.size
+    for i, (scale, width, alpha) in enumerate(
+            ((1.00, 2.4, .95), (0.86, 1.8, .55), (0.72, 1.4, .34))):
+        pts = []
+        for k in range(n + 1):                      # +1 closes the loop
+            idx = k % n
+            th = 2 * _np.pi * k / n
+            # Two lobes plus the envelope: a plain radial scale looks like a
+            # pulsing circle, this reads as a bubble being pushed around.
+            wob = e[idx] * (0.6 + 0.4 * _np.sin(3 * th + i))
+            r = base * scale + gain * wob * (1.0 - i * 0.22)
+            pts.append(f"{cx + r * _np.cos(th):.1f},{cy + r * _np.sin(th):.1f}")
+        rings.append(
+            f'<polygon points="{" ".join(pts)}" fill="none" '
+            f'stroke="url(#sxorb)" stroke-width="{width}" stroke-opacity="{alpha}" '
+            f'stroke-linejoin="round"/>')
+
+    c1, c2 = (ACCENT, ACCENT_2) if hearing else (INK_3, INK_3)
+    core = base * 0.30 + gain * 0.5
+
+    return f"""
+    <svg width="{size}" height="{size}" viewBox="0 0 {size} {size}"
+         role="img" aria-label="Microphone input level">
+      <defs>
+        <linearGradient id="sxorb" x1="0" y1="0" x2="1" y2="1">
+          <stop offset="0%" stop-color="{c1}"/>
+          <stop offset="100%" stop-color="{c2}"/>
+        </linearGradient>
+        <radialGradient id="sxhalo">
+          <stop offset="0%" stop-color="{c2}" stop-opacity="{.28 if hearing else .08}"/>
+          <stop offset="100%" stop-color="{c2}" stop-opacity="0"/>
+        </radialGradient>
+      </defs>
+      <circle cx="{cx}" cy="{cy}" r="{size * 0.44:.1f}" fill="url(#sxhalo)"/>
+      {"".join(rings)}
+      <circle cx="{cx}" cy="{cy}" r="{core:.1f}" fill="url(#sxorb)"
+              opacity="{.9 if hearing else .35}"/>
+    </svg>"""
+
+
+def level_bar(rms: float, floor: float = 0.003) -> str:
+    """Measured input level against the silence gate, in dBFS.
+
+    The number matters more than the bar: "-58 dBFS, gate at -50" tells you to
+    turn the source up or drop the floor, where a bar that simply looks empty
+    tells you nothing you can act on.
+    """
+    import math
+
+    def db(x):
+        return -90.0 if x <= 1e-9 else max(-90.0, 20 * math.log10(x))
+
+    d, dfloor = db(rms), db(floor)
+    pct = max(0.0, min(1.0, (d + 70) / 70))
+    gate = max(0.0, min(1.0, (dfloor + 70) / 70))
+    over = d >= dfloor
+    col = GREEN if over else INK_3
+
+    return f"""
+    <div style="margin-top:6px">
+      <div style="position:relative;height:6px;border-radius:3px;
+                  background:{EDGE};overflow:hidden">
+        <div style="width:{pct * 100:.1f}%;height:100%;border-radius:3px;
+                    background:linear-gradient(90deg,{ACCENT},{col})"></div>
+        <div style="position:absolute;left:{gate * 100:.1f}%;top:-2px;bottom:-2px;
+                    width:2px;background:{AMBER};opacity:.9"></div>
+      </div>
+      <div style="display:flex;justify-content:space-between;margin-top:5px;
+                  font-size:11px;color:{INK_3};
+                  font-feature-settings:'tnum' 1">
+        <span>input <b style="color:{col}">{d:.0f} dBFS</b></span>
+        <span>gate {dfloor:.0f}</span>
+      </div>
+    </div>"""
+
+
 def legend() -> str:
     cells = "".join(
         f'<span style="display:inline-flex;align-items:center;gap:7px;margin-right:22px">'
@@ -325,7 +422,8 @@ def timeline(times, raw, smoothed, amber, red, *, height=280):
 
 
 SECTIONS = (("overview", "Overview"), ("live", "Live mic"),
-            ("analyze", "Analyze"), ("compare", "Compare"), ("method", "Method"))
+            ("analyze", "Analyze"), ("compare", "Compare"),
+            ("method", "Method"), ("extension", "Extension"))
 
 
 def nav() -> str:
