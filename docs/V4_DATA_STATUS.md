@@ -59,7 +59,7 @@ RIR, MUSAN.
 |---|---|---|
 | In-the-Wild | Yugal | ✅ audio unzipped — v2 extraction running |
 | ASVspoof19 LA eval | on disk | ✅ v2 extraction running |
-| `sonix_real/` (9 matched pairs) | Anubhav | ✅ audio + manifest — v2 extraction queued |
+| `sonix_real/` — 9 **human-identified** pairs; **0 machine-pairable** until Anubhav renames to `<rid>__<lang>__<channel>__<tool>` | Anubhav | ⚠️ rename in progress; legacy clone tool = `unknown` |
 | `sonix_real/` scale-up to 200+ pairs | Anubhav | ❌ not started |
 | DEEP-VOICE (RVC — leave-one-family-out) | Anubhav | ❌ not received |
 | WaveFake (comparability only) | Anubhav | ❌ optional |
