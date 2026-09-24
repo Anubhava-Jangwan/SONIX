@@ -38,3 +38,4 @@ testcall.wav
 # local backups made before edits
 *.bak
 uidemo/SONIX_Suryansh_Demo_UI_v9/outputs/
+*.log

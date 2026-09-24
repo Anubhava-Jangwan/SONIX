@@ -140,6 +140,12 @@ def main():
     ap.add_argument("--agg", default="mean", choices=["mean", "median", "max", "p90"],
                     help="how to reduce per-window scores to one clip score")
     ap.add_argument("--no-vad", action="store_true", help="score every window, gate off")
+    ap.add_argument("--batch", type=int, default=8,
+                    help="windows per front-end forward pass. A 116-window clip "
+                         "sent in one go needs ~4 GB and OOMs a 6 GB card; drop "
+                         "to 4 or 2 if it still fails.")
+    ap.add_argument("--device", default=None,
+                    help="force 'cuda' or 'cpu' (default: auto-detect)")
     ap.add_argument("--out", default="outputs/diagnose_pairs.csv")
     args = ap.parse_args()
 
@@ -181,7 +187,7 @@ def main():
     # ---- embed once, reuse for every head
     print("loading front-end ...")
     frontend.load()
-    device = "cuda" if torch.cuda.is_available() else "cpu"
+    device = args.device or ("cuda" if torch.cuda.is_available() else "cpu")
 
     embs, meta = [], []
     for i, (p, lab, grp) in enumerate(clips, 1):
@@ -199,7 +205,15 @@ def main():
             print(f"  !! {p.name}: every window failed the gate")
             continue
         use = [w for w, k in zip(wins, kept) if k]
-        e = frontend.embed(use)
+        # Chunked: frontend.embed(use) on a whole clip allocates
+        # len(use) x 64000 samples through the conv stack at once, which is
+        # ~3.9 GB for a 116-window clip and OOMs a 6 GB card partway through
+        # the set. Same result, bounded peak memory.
+        e = np.concatenate(
+            [frontend.embed(use[j:j + args.batch])
+             for j in range(0, len(use), args.batch)], axis=0)
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
         embs.append(e)
         meta.append({"file": p.name, "label": lab, "group": grp,
                      "windows": len(wins), "scored": int(kept.sum())})
