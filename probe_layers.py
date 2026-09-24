@@ -473,14 +473,34 @@ def report(rows, en, indic, indic_real, args):
     """
     base = next((r for r in rows if r["block"] == "ln"), None)
 
-    def rank(key, lower_better):
-        order = sorted(rows, key=lambda r: r[key], reverse=not lower_better)
-        return {r["block"]: i for i, r in enumerate(order)}
+    # ---- drop saturated axes before ranking ------------------------------
+    # A column where every block scores the same ranks nothing, and folding it
+    # into a rank-sum anyway is worse than useless: the tie order becomes
+    # arbitrary and can outvote the one column that does carry signal. It did
+    # exactly that on the first real run -- block 5 was returned as the winner
+    # over block 6 on two tied columns, while block 6 was better on the only
+    # axis that varied. So an axis has to actually separate blocks to get a vote.
+    AXES = [("a_acc", True, "A language"),
+            ("b_acc", True, "B corpus"),
+            ("c_unseen", False, "C unseen-attack")]
+    live, dead = [], []
+    for key, lower_better, name in AXES:
+        vals = [r[key] for r in rows]
+        spread = max(vals) - min(vals)
+        (live if spread >= 0.01 else dead).append((key, lower_better, name, spread))
 
-    ra, rb = rank("a_acc", True), rank("b_acc", True)
-    rc = rank("c_unseen", False)
+    if dead:
+        print("\n  SATURATED AXES -- excluded from the ranking:")
+        for key, _, name, spread in dead:
+            print(f"    {name:16s} every block within {spread:.4f} of "
+                  f"{rows[0][key]:.4f}; this column ranks nothing.")
+
     for r in rows:
-        r["ranksum"] = ra[r["block"]] + rb[r["block"]] + rc[r["block"]]
+        r["ranksum"] = 0
+    for key, lower_better, _, _ in live:
+        order = sorted(rows, key=lambda r: r[key], reverse=not lower_better)
+        for i, r in enumerate(order):
+            r["ranksum"] += i
 
     ranked = sorted(rows, key=lambda r: (r["ranksum"], -r["c_unseen"]))
 
@@ -504,7 +524,20 @@ def report(rows, en, indic, indic_real, args):
         print(f"  serves today):  A {base['a_acc']*100:.2f}%   "
               f"B {base['b_acc']*100:.2f}%   C-unseen {base['c_unseen']:.4f}")
         w = ranked[0]
-        if w["block"] == "ln":
+        if not live:
+            print("\n  NO AXIS SEPARATES THE BLOCKS. Every probe is saturated, so")
+            print("  this sweep does not select a layer and none is reported. Get")
+            print("  more data before reading anything into the table above.")
+            w = None
+        elif len(live) < len(AXES):
+            names = ", ".join(n for _, _, n, _ in live)
+            print(f"\n  Ranked on {len(live)} of {len(AXES)} axes ({names}). A pick")
+            print("  resting on one axis is a weak pick -- treat it as a candidate to")
+            print("  test, not a decision, and say so wherever the number is quoted.")
+
+        if w is None:
+            pass
+        elif w["block"] == "ln":
             print("\n  The v1 representation ranks FIRST. No layer in this sweep beats")
             print("  it on the three axes together. That is a real result and it does")
             print("  NOT mean the S4 change failed -- pooling, not layer choice, is")
@@ -520,6 +553,8 @@ def report(rows, en, indic, indic_real, args):
                   f"({w['c_unseen']-base['c_unseen']:+.4f} vs v1)")
             print(f"\n  Candidate v4 front-end:  --layers {w['block']} "
                   f"--pool {indic.meta['pool']}")
+            print("  NOT a committed choice -- re-run this sweep against real Indic")
+            print("  bonafide audio (S2) before spending a full extraction on it.")
 
     print("\n  SCOPE. Probe C here is leave-attack-out inside ASVspoof, not the")
     print("  locked cross-lingual transfer probe. It says which block keeps spoof")

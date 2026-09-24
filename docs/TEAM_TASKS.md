@@ -149,3 +149,95 @@ path runs through **Akshat's hard drive** and **Navya's download**, not through 
 
 Everything else — training changes, evaluation, thresholds, the serving integration —
 is waiting on those two items.
+
+---
+
+# ANUBHAV
+
+Four datasets are currently nobody's job, and two of them are direct fixes for
+confounds we have measured. Plus the set that decides everything.
+
+## 1. Scale `sonix_real/` — highest value on this list
+
+It is 19 named real/clone pairs plus 20 anonymous clips. That is a smoke test,
+not an evaluation set. It is also our **only** decisive test — the matched
+real/clone pair from the same speaker is both the strongest demo and the thing
+that told us the model was broken.
+
+39 clips cannot support a claim in a paper or survive a jury question about
+sample size.
+
+**Need:** 200+ matched pairs. Multiple Indian languages. At least three
+different cloning tools so we can report per-tool results. Keep the manifest
+columns consistent with the rest of the pipeline:
+`path, recording_id, corpus, language, generator_family, channel, label, split`
+
+`generator_family` = which tool made the clone. We are adding a generator-ID
+output head and that label is training data.
+
+**Constraint:** whoever you clone here must NOT also be used for Akshat's
+training-set clone generation. If the speakers overlap, `sonix_real/` stops
+being held out and we lose the only test that has ever caught a real failure.
+
+## 2. Common Voice — Indic (hi, bn, ta, mr, pa, ur)
+
+**CC0.** Target ~15,000 clips.
+
+This is the fix for a measured confound. Genuine clips that PASSED our detector
+sat at 34.6 and 37.7 dB SNR; genuine clips that FAILED sat at 39.2–66.8 dB.
+Synthetic sat at 96–140 dB. The model partly learned "clean recording means
+fake" — because our only bonafide corpora are one spontaneous Indic set and
+ASVspoof's clean read speech. Common Voice is crowd-recorded on phones, with
+wildly varying quality and thousands of speakers. That is exactly the variance
+we are missing.
+
+## 3. LibriSpeech train-clean-100 (~6 GB, openslr.org/12)
+
+~10,000 English bonafide clips.
+
+Also a measured fix. We currently train on 2,580 English real against 91,200
+English fake — an 89.8% prior that "English means fake", versus 48.7% for
+Indic. That 41-point gap is half of why the model learned language instead of
+synthesis. English real has to exist in volume or the shortcut stays available.
+
+## 4. DEEP-VOICE (Kaggle: `birdy654/deep-voice-deepfake-voice-recognition`)
+
+Small. **Held out, never trained on.**
+
+RVC — retrieval-based voice conversion, a consumer family we have zero training
+data for. It is our leave-one-family-out test: train on four generator
+families, report measured degradation on a fifth we have never seen. That
+number is what the field actually cares about.
+
+From Bird & Lotfi 2023, whose own 99.3% headline came from row-level
+cross-validation on 62 minutes of audio — do not reproduce their method.
+
+## 5. WaveFake (Zenodo) — **eval only**
+
+Its vocoders overlap LibriSeVoc's heavily, so it is worth more as a
+comparability number (it appears in the Sun et al. 2026 survey's meta-table)
+than as training rows. Download, hold out, do not train.
+
+---
+
+# YUGAL — my own lane
+
+## Datasets I own (all already on disk, no download)
+
+| Asset | Location | State |
+|---|---|---|
+| ASVspoof19 LA train/dev/eval | `data/asvspoof19_la/` | full audio + protocols |
+| ASVspoof 5 raw | `data/asvspoof5/raw/` | never prepped; `prep_asvspoof5.py` exists |
+| MMS-TTS Indic spoof | `data/indic_spoof/` + `_aug/` | 800 + 800 wavs |
+| `sonix_real/` | repo root | 39 clips, Anubhav scaling it |
+
+## Work
+
+1. **S0 diagnostics** — `diagnose_pairs.py`, `verify_head.py`, `realtime/selftest.py`.
+   All three still unrun. ~1 hour, no downloads.
+2. **GPU queue** (below) — my GPU is idle and the English half of v4's data is
+   already on disk.
+3. **Code with no data dependency** — AMR-WB + Opus in `make_codec.py`;
+   group-balanced sampling over `{language} × {family} × {label}` replacing the
+   global `pos_weight` in `src/train.py`; `verify_v4.py`.
+4. **Move the repo off OneDrive** before 150 GB of audio lands.
