@@ -17,8 +17,16 @@ TARGET_SR = 16000
 _STATE = {"loaded": False}
 
 
-def load(model_name="facebook/wav2vec2-xls-r-300m", device=None, half=True):
-    """Load the frozen front-end once. Safe to call repeatedly."""
+def load(model_name="facebook/wav2vec2-xls-r-300m", device=None, half=False):
+    """Load the frozen front-end once. Safe to call repeatedly.
+
+    half defaults OFF. XLS-R in fp16 returns an all-NaN last_hidden_state on
+    a GTX 1650 (measured 2026-09-22: 1024/1024 NaN in fp16, clean in fp32),
+    which silently turned every live score into nan. demo/score_file.py -- the
+    path every reported number came from -- has always run fp32, and this file
+    claims to be the same computation. Opt in with half=True only on a GPU you
+    have checked, and check with verify_realtime.py.
+    """
     if _STATE["loaded"]:
         return
     import torch

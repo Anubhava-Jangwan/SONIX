@@ -9,12 +9,20 @@ measured and reported. This scores the same audio through both and compares.
     python verify_realtime.py "data/test_clips/suryansh_voice.wav"
 """
 import sys, numpy as np, torch
+from pathlib import Path
 
 WIN, HOP, SR = 64000, 8000, 16000
 
 def main():
     path = sys.argv[1] if len(sys.argv) > 1 else "data/test_clips/suryansh_voice.wav"
     ckpt = sys.argv[2] if len(sys.argv) > 2 else "outputs/models/head.pt"
+
+    # soundfile reports a missing file as "LibsndfileError: System error", which
+    # sends you looking for a codec problem that is not there. Say what is wrong.
+    for what, f in (("clip", path), ("checkpoint", ckpt)):
+        if not Path(f).exists():
+            print(f"FATAL: {what} not found: {Path(f).resolve()}", file=sys.stderr)
+            sys.exit("       usage: python verify_realtime.py <clip.wav> [head.pt]")
 
     sys.path.insert(0, "demo")
     import score_file as S

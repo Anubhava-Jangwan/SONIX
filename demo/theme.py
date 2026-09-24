@@ -32,7 +32,12 @@ from __future__ import annotations
 BG = "#0b1112"              # page background
 SURFACE = "#121a1b"         # cards, panels, chart plotting area
 SURFACE_RAISED = "#182223"  # hovered / nested surfaces
-LINE = "#263334"            # borders, dividers, axis spines
+LINE = "#263334"            # decorative hairlines: panels, dividers, axis spines
+# WCAG 2.1 1.4.11 wants 3:1 on the boundary of an INTERACTIVE control when that
+# boundary is what identifies it. LINE is 1.35:1 on SURFACE -- fine for a quiet
+# panel edge, not for a control you have to find. Measured, not guessed:
+#   LINE  #263334 on SURFACE = 1.35:1   LINE_STRONG #5a6767 on SURFACE = 3.00:1
+LINE_STRONG = "#5a6767"     # expanders, inputs, any focusable bordered control
 INK = "#eef4f4"             # primary text
 INK_2 = "#b3c1c1"           # secondary text, axis labels
 INK_3 = "#7e8d8d"           # muted text, tick labels, de-emphasised series
@@ -58,6 +63,7 @@ RADIUS_SM = "7px"
 PAD = "16px"
 PAD_SM = "10px"
 BORDER = f"1px solid {LINE}"
+BORDER_CONTROL = f"1px solid {LINE_STRONG}"
 
 FONT_STACK = (
     '"IBM Plex Sans", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif'
@@ -185,11 +191,11 @@ def page_css() -> str:
       }}
       div[data-testid="stExpander"] details {{
           background: {SURFACE};
-          border: {BORDER} !important;
+          border: {BORDER_CONTROL} !important;
           border-radius: {RADIUS};
           transition: border-color {DUR_FAST} {EASE};
       }}
-      div[data-testid="stExpander"] details:hover {{ border-color: {LINE}; }}
+      div[data-testid="stExpander"] details:hover {{ border-color: {ACCENT}; }}
 
       .stButton button {{
           border-radius: {RADIUS_SM}; font-weight: 600;
@@ -290,3 +296,116 @@ def plotly_layout(fig, height: int = 300, y_title: str = ""):
     fig.update_xaxes(title_text="Seconds into call", **axis)
     fig.update_yaxes(title_text=y_title, **axis)
     return fig
+
+
+# --- risk timeline -------------------------------------------------------
+# The live dashboard (realtime/live_ui.py) draws its timeline in plotly with
+# the decision bands shaded behind the series; demo/app.py drew the same data
+# in matplotlib and looked like a different product. One definition here so
+# the two surfaces cannot drift again -- realtime/live_ui.py still has its own
+# copy (_risk_bands/upload_chart) and should be pointed at these next.
+
+BAND_LEGEND = (
+    (GOOD, "Green", "consistent with real voice"),
+    (WARN, "Amber", "uncertain"),
+    (CRIT, "Red", "likely synthetic"),
+)
+
+
+def band_word(score, amber, red):
+    """Band name for a score. Colour is never the only signal -- this is the
+    word that goes in the hover text and the readout beside it."""
+    if score is None:
+        return "-"
+    return "Red" if score >= red else ("Amber" if score >= amber else "Green")
+
+
+def risk_bands(fig, amber, red, overlay=None):
+    """Green/Amber/Red shading + dotted threshold lines, 0-100% y-axis with
+    gridlines only at 25/50/75."""
+    for lo, hi, colour in ((0, amber, GOOD), (amber, red, WARN), (red, 1, CRIT)):
+        fig.add_hrect(y0=lo, y1=hi, fillcolor=colour, opacity=0.07,
+                      line_width=0, layer="below")
+    for y, label, colour in ((amber, "Amber", WARN), (red, "Red", CRIT)):
+        fig.add_hline(y=y, line=dict(color=colour, width=1, dash="dot"),
+                      annotation_text=f"{label} {y:.0%}", annotation_position="right",
+                      annotation_font=dict(color=colour, size=11))
+    fig.update_yaxes(range=[-0.02, 1.02], tickformat=".0%",
+                     tickvals=[0.25, 0.50, 0.75])
+    fig.update_layout(transition=dict(duration=350, easing="cubic-in-out"))
+    if overlay:
+        fig.add_annotation(text=overlay, showarrow=False, xref="paper", yref="paper",
+                           x=0.5, y=0.5, font=dict(size=20, color=CRIT),
+                           bgcolor="rgba(18,26,27,0.90)", bordercolor=CRIT,
+                           borderwidth=1, borderpad=10)
+    return fig
+
+
+def risk_timeline(times, raw, smoothed, amber, red, *, height=380,
+                  current_time=None, switch_time=None, overlay=None):
+    """Per-window risk over a clip: raw scores as evidence, the smoothed line
+    as the verdict, decision bands behind both."""
+    import plotly.graph_objects as go
+
+    fig = go.Figure()
+    risk_bands(fig, amber, red, overlay)
+    if len(raw):
+        fig.add_trace(go.Scatter(
+            x=list(times), y=list(raw), mode="markers", name="Per-window score",
+            customdata=[band_word(v, amber, red) for v in raw],
+            marker=dict(size=6, color=SERIES_MUTED, opacity=0.65),
+            hovertemplate="%{x:.1f}s &nbsp; raw %{y:.3f} - %{customdata}<extra></extra>",
+        ))
+    if len(smoothed):
+        fig.add_trace(go.Scatter(
+            x=list(times), y=list(smoothed), mode="lines",
+            name="Smoothed (5-window mean)",
+            customdata=[[f"{v:.3f}", band_word(v, amber, red)] for v in smoothed],
+            line=dict(color=SERIES, width=2.5),
+            hovertemplate=("%{x:.1f}s &nbsp; <b>%{y:.0%}</b> - %{customdata[1]}"
+                           " &nbsp;(raw %{customdata[0]})<extra></extra>"),
+        ))
+    if switch_time is not None:
+        fig.add_vline(x=switch_time, line=dict(color=INK_2, width=1.5, dash="dot"),
+                      annotation_text="15 s switch", annotation_position="top",
+                      annotation_font=dict(color=INK_2, size=11))
+    if current_time is not None:
+        fig.add_vline(x=current_time, line=dict(color=ACCENT, width=2))
+    fig = plotly_layout(fig, height=height, y_title="P(AI voice)")
+    # The Amber/Red threshold annotations anchor right, outside the plotting
+    # area; plotly_layout()'s 8px right margin clips them to "A" and "Re".
+    # Set after plotly_layout(), which replaces the whole margin dict.
+    fig.update_layout(margin_r=64)
+    # A single-window clip has one x value and plotly pads it out to -1..1, which
+    # reads as negative time. Always start at 0 and show at least 5 s.
+    span = max(5.0, float(max(times)) + 1.0 if len(times) else 0.0,
+               float(current_time or 0.0) + 1.0,
+               float(switch_time or 0.0) + 1.0)
+    fig.update_xaxes(title_text="Window start (seconds into clip)",
+                     showgrid=False, range=[0, span])
+    return fig
+
+
+def band_legend() -> str:
+    """One-line swatch + word + plain-English meaning, for under a timeline."""
+    cells = " &nbsp;&nbsp; ".join(
+        f'<span style="color:{c};font-weight:700">&#9632;</span> '
+        f'<b style="color:{INK_2}">{n}</b> '
+        f'<span style="color:{INK_3}">= {meaning}</span>'
+        for c, n, meaning in BAND_LEGEND
+    )
+    return f'<div style="font-size:12.5px;margin:6px 0 2px">{cells}</div>'
+
+
+def stat_tile(label: str, value: str, tone: str = "") -> str:
+    """Compact labelled value for the analysis metric row -- replaces the raw
+    dict st.write() was dumping while a clip streamed."""
+    colour = tone or INK
+    return (
+        f'<div style="border:{BORDER};border-radius:{RADIUS_SM};'
+        f'padding:{PAD_SM} 14px;background:{SURFACE};">'
+        f'<div style="font-size:{FS_CAPTION};font-weight:600;letter-spacing:.1em;'
+        f'text-transform:uppercase;color:{INK_3};margin-bottom:3px;">{label}</div>'
+        f'<div style="font-size:19px;font-weight:700;color:{colour};'
+        f'line-height:1.2;white-space:nowrap;">{value}</div></div>'
+    )
