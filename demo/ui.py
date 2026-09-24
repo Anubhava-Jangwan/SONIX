@@ -75,13 +75,21 @@ def page_css() -> str:
       /* fixed, not sticky: Streamlit wraps every element, so the nav's parent
          is only as tall as the nav and sticky has nothing to stick inside.
          The scrolling ancestor is section.stMain, not the document. */
+      /* The bar is translucent, so widgets scrolled under it stay faintly
+         visible -- and a full-width fixed element eats every click in the top
+         62px. That combination is a trap: you can see the file uploader's
+         "Browse files" through the glass, aim at it, and the click lands on
+         the nav instead, with no feedback. Only the brand and the links have
+         any business receiving clicks; the bar itself passes them through. */
       .sx-nav {{
         position: fixed; top: 0; left: 0; right: 0; z-index: 999991;
         padding: 12px max(26px, calc((100vw - 1180px) / 2));
         display: flex; gap: 6px; align-items: center; flex-wrap: wrap;
         background: rgba(10,11,16,.82); backdrop-filter: blur(14px) saturate(140%);
         border-bottom: 1px solid {EDGE};
+        pointer-events: none;
       }}
+      .sx-nav a, .sx-nav .sx-brand {{ pointer-events: auto; }}
       .sx-nav .sx-brand {{
         font-family: 'Space Grotesk', system-ui, sans-serif; font-weight: 700;
         font-size: 17px; letter-spacing: -.02em; color: {INK}; margin-right: 14px;

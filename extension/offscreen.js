@@ -116,6 +116,9 @@ async function start({ streamId, serverUrl, caller, model }) {
       const d = m.data[callId];
       toBackground({ type: "score", score: d.score, windows: d.window_idx + 1 });
     }
+    if (m.type === "model_changed" && m.call_id === callId) {
+      toBackground({ type: "model_changed", model: m.model });
+    }
     if (m.type === "error") {
       toBackground({ type: "error", message: m.message });
     }
@@ -150,8 +153,21 @@ function stop() {
   callId = null;
 }
 
+/* Swap the head scoring THIS call, without touching the audio path.
+ *
+ * Deliberately not a stop()/start() pair: restarting would mint a new call_id
+ * and send the operator back through the consent gate, and the panel's graph
+ * would lose the call it is graphing. The server re-points the existing
+ * session instead -- see SonicServer._set_call_model.
+ */
+function setModel(model) {
+  if (!ws || ws.readyState !== WebSocket.OPEN || !callId) return;
+  ws.send(JSON.stringify({ type: "set_model", call_id: callId, model }));
+}
+
 chrome.runtime.onMessage.addListener((msg) => {
   if (msg.target !== "offscreen") return;
   if (msg.type === "start") start(msg);
   if (msg.type === "stop") stop();
+  if (msg.type === "set_model") setModel(msg.model);
 });

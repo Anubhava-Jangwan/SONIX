@@ -288,6 +288,9 @@ class SonicServer:
                         elif data.get("type") == "start_mic_call":
                             await self._start_mic_call(ws, data)
 
+                        elif data.get("type") == "set_model":
+                            await self._set_call_model(ws, data)
+
                         elif data.get("type") == "ping":
                             await ws.send_str(json.dumps({
                                 "type": "pong",
@@ -331,6 +334,61 @@ class SonicServer:
 
         return ws
 
+    async def _set_call_model(self, ws, data: dict):
+        """Re-point THIS socket's live call at a different head, mid-call.
+
+        The extension's side panel offers a model picker while a call is
+        running. Restarting the call to honour it would mint a new call_id and
+        send the operator back through the consent gate -- that is a new call,
+        not a model change, and it throws away the score history on screen.
+
+        The swap itself is cheap for the same reason it is cheap in the demo:
+        the ~300M front-end is frozen and shared by every head, so this only
+        has to point the session at a different ~300k-param MLP. The audio
+        stream is never interrupted.
+
+        Ownership is checked exactly as end_call checks it -- a socket may only
+        re-point the call it started. /ws has no origin check, so without this
+        any page the operator had open could silently change which model a live
+        call is being judged by.
+        """
+        owned = self.ws_calls.get(ws)
+        asked = data.get("call_id")
+        if not owned or (asked is not None and asked != owned):
+            logger.warning("refused set_model for %r from a socket owning %r",
+                           asked, owned)
+            await ws.send_str(json.dumps({
+                "type": "error",
+                "message": "set_model is only allowed for this connection's own call",
+            }))
+            return
+
+        session = self.sessions.get(owned)
+        if session is None:
+            return
+
+        key = (data.get("model") or "").strip()
+        if not key:
+            return
+
+        if not self.mock:
+            try:
+                await asyncio.to_thread(self.engine.ensure_model, key)
+            except Exception as exc:
+                await ws.send_str(json.dumps({
+                    "type": "error",
+                    "message": f"model '{key}' unavailable: {exc}",
+                }))
+                return
+
+        # Same object the engine holds in its own sessions dict, so this is all
+        # engine.session_model_key() needs to start reading on the next batch.
+        session.model_key = key
+        logger.info("call %s switched to head '%s' mid-call", owned, key)
+        await ws.send_str(json.dumps({
+            "type": "model_changed", "call_id": owned, "model": key,
+        }))
+
     async def _start_mic_call(self, ws, data: dict):
         """Create a session fed by browser microphone audio over this socket."""
         if len(self.sessions) >= self.max_calls:
@@ -338,6 +396,7 @@ class SonicServer:
                 "type": "error", "message": f"max concurrent calls ({self.max_calls}) reached"
             }))
             return
+
 
         # Same "which head" pick the upload path offers, mirrored here so the
         # live capture widget on the website can pass a model too instead of

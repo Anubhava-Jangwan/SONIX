@@ -14,6 +14,11 @@
 
 const OFFSCREEN_PATH = "offscreen.html";
 
+// Roughly two minutes of windows. The side panel plots this; capping it here
+// rather than in the panel keeps the message payload bounded, because the
+// whole state object is sent on every scored window.
+const MAX_POINTS = 240;
+
 let state = {
   capturing: false,
   tabId: null,
@@ -22,9 +27,29 @@ let state = {
   callState: null,          // consent_pending | listening | scoring | ended
   scoringAvailable: false,
   lastScore: null,
+  scores: [],               // score history, for the panel's graph
   windows: 0,
   error: null,
+
+  serverUrl: null,
+  models: [],               // [{key, label}] offered by the server
+  model: null,              // the head currently scoring this call
 };
+
+/* Fetched here rather than in the content script: a content script shares the
+   page's CSP, and meet.google.com's script-src/connect-src is not something we
+   get to negotiate with. The service worker has host_permissions instead. */
+async function loadModels(serverUrl) {
+  try {
+    const r = await fetch(`${serverUrl.replace(/\/+$/, "")}/api/models`);
+    const info = await r.json();
+    const ready = (info.models || []).filter((m) => m.exists);
+    state.models = ready.map((m) => ({ key: m.key, label: m.label }));
+    if (!state.model) state.model = info.default || null;
+  } catch {
+    state.models = [];       // server not up yet; the panel shows "default"
+  }
+}
 
 /* ------------------------------------------------------------------ */
 /* Offscreen document                                                  */
@@ -65,7 +90,11 @@ async function startCapture(serverUrl, model) {
 
   await ensureOffscreen();
 
-  state = { ...state, capturing: true, tabId: tab.id, error: null, windows: 0 };
+  state = {
+    ...state, capturing: true, tabId: tab.id, error: null, windows: 0,
+    scores: [], lastScore: null, serverUrl, model: model || state.model,
+  };
+  loadModels(serverUrl).then(pushToOverlay);
 
   chrome.runtime.sendMessage({
     target: "offscreen",
@@ -88,6 +117,7 @@ async function stopCapture() {
     pairingCode: null,
     callState: null,
     lastScore: null,
+    scores: [],
   };
   updateBadge();
   pushToOverlay();
@@ -153,6 +183,18 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     return false;
   }
 
+  // From the in-call side panel. Optimistic: the picker shows the new head
+  // immediately, and model_changed from the server confirms it. A failure
+  // arrives as a normal error message, which the panel already renders.
+  if (msg.type === "overlay:setModel") {
+    state.model = msg.model;
+    chrome.runtime.sendMessage({
+      target: "offscreen", type: "set_model", model: msg.model,
+    });
+    pushToOverlay();
+    return false;
+  }
+
   // From the offscreen document
   if (msg.target === "background") {
     if (msg.type === "call_started") {
@@ -164,6 +206,14 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     } else if (msg.type === "score") {
       state.lastScore = msg.score;
       state.windows = msg.windows ?? state.windows;
+      if (typeof msg.score === "number") {
+        state.scores.push(msg.score);
+        if (state.scores.length > MAX_POINTS) state.scores.shift();
+      }
+    } else if (msg.type === "model_changed") {
+      // Confirmed by the server on the existing socket -- the call was NOT
+      // restarted, so the history above is still this call's history.
+      state.model = msg.model;
     } else if (msg.type === "scoring_available") {
       state.scoringAvailable = msg.value;
     } else if (msg.type === "error") {

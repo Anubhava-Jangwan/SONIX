@@ -19,8 +19,8 @@ if str(HERE) not in sys.path:
     sys.path.insert(0, str(HERE))
 
 import ui                                                      # noqa: E402
-from core import (available_models, bands_from, clip_facts,    # noqa: E402
-                  clip_picker, default_index, defaults, REPO,
+from core import (available_models, band_legend, bands_from,   # noqa: E402
+                  clip_facts, clip_picker, default_index, defaults, REPO,
                   short_clip_warning, threshold_controls)
 
 st.set_page_config(page_title="SONIX", page_icon=":material/graphic_eq:",
@@ -139,26 +139,119 @@ st.markdown('<hr class="sx-rule">', unsafe_allow_html=True)
 # ======================================================================
 st.markdown(ui.anchor("live", "Speak into the mic", "Live capture"),
             unsafe_allow_html=True)
-st.markdown('<div class="sx-lede">Record straight from the browser at 16 kHz '
-            'and score it through the same path a call takes.</div>',
-            unsafe_allow_html=True)
+st.markdown('<div class="sx-lede">Continuous capture at 16 kHz, scored window '
+            'by window as you speak — on this page, on this port. Change the '
+            'head mid-sentence and the graph keeps going: the 300M front-end '
+            'is frozen and shared, so a swap only reloads a ~300k-param MLP.'
+            '</div>', unsafe_allow_html=True)
 st.write("")
 
 if not models:
     st.error("No trained head under outputs/models/ — scoring is unavailable.",
              icon=":material/error:")
 else:
+    @st.cache_resource
+    def _mic():
+        """One capture object for the whole server process. cache_resource
+        (not session_state) because the threads must outlive any single
+        rerun — session_state is rebuilt far too eagerly for that."""
+        from live import LiveMic
+        return LiveMic()
+
+    mic = _mic()
+
+    # run_every drives the redraw. Everything the fragment shows already
+    # exists in the deques before it runs, so a slow rerun delays the picture
+    # by a frame -- it never leaves a hole in the series.
+    @st.fragment(run_every=1.0)
+    def live_panel():
+        c1, c2, c3 = st.columns([2, 3, 3])
+
+        with c1:
+            if mic.running:
+                if st.button("Stop", use_container_width=True, key="live_stop"):
+                    mic.stop()
+                    st.rerun(scope="fragment")
+            else:
+                if st.button("Start listening", type="primary",
+                             use_container_width=True, key="live_start"):
+                    k = (st.session_state.get("live_head")
+                         or list(models)[default_index(models)])
+                    mic.start(str(REPO / models[k][1]), k,
+                              device=st.session_state.get("live_dev"))
+                    st.rerun(scope="fragment")
+
+        with c2:
+            # Selecting a head only writes an attribute the scorer reads on
+            # its next window. No restart, no cleared history.
+            k = st.selectbox("Head", list(models), key="live_head",
+                             index=default_index(models),
+                             format_func=lambda x: models[x][0],
+                             label_visibility="collapsed")
+            if mic.running and k != mic.model_key:
+                mic.ckpt, mic.model_key = str(REPO / models[k][1]), k
+
+        with c3:
+            if mic.error:
+                st.error(mic.error, icon=":material/error:")
+            elif not mic.running:
+                st.caption("Idle — nothing is being recorded.")
+            elif mic.warming:
+                st.caption("Loading the frozen 300M front-end — first start "
+                           "only, then heads swap instantly.")
+            elif mic.buffering() < 1.0:
+                st.caption(f"Filling the first 4 s window… "
+                           f"{mic.buffering():.0%}")
+            else:
+                st.caption(f"{mic.windows_scored} windows scored"
+                           + (f" · {mic.windows_dropped} dropped to stay live"
+                              if mic.windows_dropped else ""))
+
+        if not mic.running:
+            devs = mic.input_devices()
+            if devs:
+                names = dict(devs)
+                st.selectbox("Input device", [i for i, _ in devs],
+                             key="live_dev", format_func=lambda i: names[i],
+                             help="A microphone records your own voice. A "
+                                  "loopback device (Stereo Mix, What U Hear) "
+                                  "records whoever is on the call — that is "
+                                  "the side you want to screen for a clone.")
+            else:
+                st.warning("No recording device found.", icon=":material/mic_off:")
+
+        times, raw, keys = mic.series()
+        if not raw:
+            st.info("Press **Start listening**, then speak for four seconds — "
+                    "that is one window.", icon=":material/mic:")
+            return
+
+        amber, red = st.session_state["amber"], st.session_state["red"]
+        smoothed, bands = bands_from(raw, amber, red)
+        st.markdown(ui.verdict(bands[-1], float(smoothed[-1]),
+                               models[keys[-1]][0] if keys[-1] in models else "—",
+                               sum(b != "GREEN" for b in bands) / len(bands)),
+                    unsafe_allow_html=True)
+        st.write("")
+        st.plotly_chart(ui.timeline(times, raw, smoothed, amber, red),
+                        use_container_width=True, key="live_tl")
+        band_legend()
+
+    live_panel()
+
+with st.expander("Record a fixed clip instead"):
     lc1, lc2 = st.columns([3, 2])
     with lc1:
         rec = st.audio_input("Record a few seconds of speech", key="mic")
     with lc2:
-        live_key = st.selectbox("Head", list(models), key="mic_head",
-                                index=default_index(models),
+        live_key = st.selectbox("Head", list(models) if models else [],
+                                key="mic_head",
+                                index=default_index(models) if models else 0,
                                 format_func=lambda k: models[k][0])
         st.caption("Speak for at least 4 seconds — that is one window. "
                    "Shorter clips get repeat-padded, which shifts the score.")
 
-    if rec is not None:
+    if models and rec is not None:
         import tempfile
         mic_path = Path(tempfile.gettempdir()) / "sonix_mic.wav"
         mic_path.write_bytes(rec.getbuffer())
@@ -173,22 +266,6 @@ else:
         if st.session_state["scores"].get(sig):
             render_result(st.session_state["scores"][sig], mic_path,
                           models[live_key][0], "mic_")
-
-with st.expander("Continuous streaming over WebSocket (separate service)"):
-    st.markdown(
-        "`st.audio_input` above records then scores. The **continuous** path — "
-        "a live call scored window-by-window as it arrives, with the consent "
-        "gate and audit trail — runs as its own aiohttp service, not inside "
-        "Streamlit:")
-    st.code("python -m realtime.server --ws-port 8000 --mode webrtc\n"
-            "# then open http://localhost:8000/mic", language="bash")
-    try:
-        import requests
-        r = requests.get("http://localhost:8000/api/status", timeout=1.5)
-        st.success(f"Server is up: {r.json()}", icon=":material/check_circle:")
-    except Exception:
-        st.caption("Not running right now — start it with the command above. "
-                   "Its own dashboard is `streamlit run realtime/live_ui.py`.")
 
 st.markdown('<hr class="sx-rule">', unsafe_allow_html=True)
 

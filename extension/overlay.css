@@ -1,23 +1,206 @@
-/* SONIX in-call overlay.
-   Tokens mirror popup.css (dark variants) and demo/theme.py. Radii and type
-   sizes match the popup so the overlay reads as the same product. */
-#sonix-overlay{
-  position:fixed;top:14px;right:14px;z-index:2147483647;
-  background:rgba(18,26,27,.94);color:#eef4f4;
-  border:1px solid #263334;border-radius:10px;
-  padding:9px 12px;min-width:186px;
-  font:13px/1.45 "IBM Plex Sans",system-ui,-apple-system,Segoe UI,Roboto,sans-serif;
-  box-shadow:0 6px 24px -8px rgba(0,0,0,.6);
-  backdrop-filter:blur(6px);pointer-events:none;user-select:none;
+/* SONIX in-call side panel.
+
+   Tokens mirror popup.css (dark variants) and demo/theme.py, so the panel,
+   the popup and the Streamlit dashboard read as one product.
+
+   Half-transparent on purpose: this sits on top of a live video call and must
+   never hide a face. Everything is a translucent surface over a blur.
+
+   NOTE the pointer-events discipline. The old overlay was a read-only chip and
+   set pointer-events:none on the whole thing. This panel has a model picker in
+   it, so the panel itself takes clicks -- but the page underneath must stay
+   usable, which is why the panel is a fixed column at the edge rather than a
+   full-viewport layer. A translucent layer that spans the page and still eats
+   clicks is the single worst thing you can put over someone's call UI: the
+   controls stay visible through it, so they look clickable and are not. */
+
+#sonix-panel {
+  position: fixed;
+  top: 0;
+  right: 0;
+  height: 100vh;
+  width: 336px;
+  z-index: 2147483647;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 14px 15px;
+
+  background: rgba(12, 16, 17, .55);
+  backdrop-filter: blur(18px) saturate(140%);
+  -webkit-backdrop-filter: blur(18px) saturate(140%);
+  border-left: 1px solid rgba(255, 255, 255, .10);
+  box-shadow: -18px 0 46px -22px rgba(0, 0, 0, .8);
+
+  color: #eef4f4;
+  font: 13px/1.45 "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  pointer-events: auto;
+  user-select: none;
 }
-#sonix-overlay .sonix-row{display:flex;align-items:center;gap:7px}
-#sonix-overlay .sonix-dot{width:8px;height:8px;border-radius:50%;background:#7e8d8d;flex:none}
-#sonix-overlay .sonix-name{
-  font-size:10px;letter-spacing:.12em;text-transform:uppercase;
-  color:#7e8d8d;font-weight:600;
+
+#sonix-panel.sonix-collapsed {
+  width: 46px;
+  padding: 14px 8px;
 }
-#sonix-overlay .sonix-band{margin-left:auto;font-weight:700;font-variant-numeric:tabular-nums}
-#sonix-overlay .sonix-sub{margin-top:3px;font-size:11px;color:#b3c1c1}
-@media (prefers-reduced-motion:no-preference){
-  #sonix-overlay{transition:opacity .18s ease}
+
+#sonix-panel.sonix-collapsed .sonix-hide-collapsed {
+  display: none;
+}
+
+/* --- header ------------------------------------------------------------ */
+#sonix-panel .sonix-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: none;
+}
+
+#sonix-panel .sonix-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #7e8d8d;
+  flex: none;
+}
+
+#sonix-panel .sonix-name {
+  font-size: 10px;
+  letter-spacing: .14em;
+  text-transform: uppercase;
+  color: #9fb0b0;
+  font-weight: 600;
+}
+
+#sonix-panel .sonix-toggle {
+  margin-left: auto;
+  background: transparent;
+  border: 1px solid rgba(255, 255, 255, .14);
+  color: #b3c1c1;
+  border-radius: 7px;
+  width: 24px;
+  height: 24px;
+  cursor: pointer;
+  font-size: 13px;
+  line-height: 1;
+  padding: 0;
+  flex: none;
+}
+
+#sonix-panel .sonix-toggle:hover {
+  background: rgba(255, 255, 255, .08);
+  color: #eef4f4;
+}
+
+/* --- verdict ----------------------------------------------------------- */
+#sonix-panel .sonix-verdict {
+  border: 1px solid rgba(255, 255, 255, .10);
+  border-left: 3px solid #7e8d8d;
+  border-radius: 11px;
+  background: rgba(255, 255, 255, .04);
+  padding: 11px 13px;
+  flex: none;
+}
+
+#sonix-panel .sonix-word {
+  font-size: 25px;
+  font-weight: 700;
+  letter-spacing: -.02em;
+  line-height: 1.1;
+  color: #cfdada;
+}
+
+#sonix-panel .sonix-pct {
+  font-size: 12px;
+  color: #9fb0b0;
+  font-variant-numeric: tabular-nums;
+  margin-top: 2px;
+}
+
+#sonix-panel .sonix-sub {
+  font-size: 11.5px;
+  color: #b3c1c1;
+  margin-top: 6px;
+}
+
+/* --- graph ------------------------------------------------------------- */
+#sonix-panel .sonix-chartwrap {
+  position: relative;
+  flex: none;
+  border: 1px solid rgba(255, 255, 255, .09);
+  border-radius: 11px;
+  background: rgba(0, 0, 0, .22);
+  padding: 8px 8px 4px;
+}
+
+#sonix-panel canvas {
+  display: block;
+  width: 100%;
+  height: 132px;
+}
+
+#sonix-panel .sonix-axis {
+  display: flex;
+  justify-content: space-between;
+  font-size: 10px;
+  color: #7e8d8d;
+  margin-top: 2px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* --- controls ---------------------------------------------------------- */
+#sonix-panel .sonix-label {
+  font-size: 10px;
+  letter-spacing: .12em;
+  text-transform: uppercase;
+  color: #7e8d8d;
+  font-weight: 600;
+  margin-bottom: 5px;
+}
+
+#sonix-panel select {
+  width: 100%;
+  box-sizing: border-box;
+  background: rgba(0, 0, 0, .38);
+  color: #eef4f4;
+  border: 1px solid rgba(255, 255, 255, .16);
+  border-radius: 8px;
+  padding: 7px 9px;
+  font: inherit;
+  font-size: 12.5px;
+  cursor: pointer;
+}
+
+#sonix-panel select:focus-visible {
+  outline: 2px solid #3fc2ce;
+  outline-offset: 1px;
+}
+
+#sonix-panel .sonix-meta {
+  margin-top: auto;
+  font-size: 11px;
+  color: #7e8d8d;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  flex: none;
+}
+
+#sonix-panel .sonix-meta b {
+  color: #b3c1c1;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+#sonix-panel .sonix-err {
+  font-size: 11.5px;
+  color: #f0685f;
+  border: 1px solid rgba(240, 104, 95, .4);
+  background: rgba(240, 104, 95, .10);
+  border-radius: 8px;
+  padding: 7px 9px;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  #sonix-panel { transition: width .16s ease; }
 }
