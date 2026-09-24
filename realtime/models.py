@@ -1,9 +1,11 @@
 """Which trained heads the live server can score with, and where they live.
 
-The demo UI (demo/app.py) has always let you compare the three heads on the same
-clip. The live server could only ever hold the ONE checkpoint passed with --ckpt,
-so the live dashboard had no model choice at all. This registry is what lets both
-surfaces talk about the same three models by the same names.
+The demo UI (demo/app.py) lets you compare heads on the same clip. The live
+server could only ever hold the ONE checkpoint passed with --ckpt, so the live
+dashboard had no model choice at all. This registry is what lets both surfaces
+talk about the same models by the same names -- demo/core.py imports REGISTRY
+directly rather than keeping its own copy, which is how it drifted to three
+heads while this file grew to nine.
 """
 
 from pathlib import Path

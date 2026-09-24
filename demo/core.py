@@ -7,6 +7,7 @@ the 300M-param front-end.
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 import numpy as np
@@ -18,18 +19,25 @@ from risk import hysteresis_bands, moving_average
 REPO = Path(__file__).resolve().parents[1]
 DEMO_CLIPS = REPO / "demo_clips"
 
-MODELS = {
-    "baseline": ("Baseline", "outputs/models/head.pt",
-                 "Trained on clean ASVspoof-2019 LA. In-domain eval EER 1.49%."),
-    "augmented": ("Augmented", "outputs/models/head_aug.pt",
-                  "Adds G.711 codec embeddings -- built for phone-channel audio."),
-    "robust": ("Robust", "outputs/models/head_robust.pt",
-               "Codec + RawBoost conditioning."),
-}
+# One registry for every surface. This module used to keep its own three-head
+# dict, so the demo could not reach v3 (the server's DEFAULT_KEY) or robust_v2
+# -- the only two heads with a matched-pair number against them.
+if str(REPO) not in sys.path:
+    sys.path.insert(0, str(REPO))
+
+from realtime.models import DEFAULT_KEY, REGISTRY as MODELS   # noqa: E402
 
 
 def available_models():
+    """Registered heads whose checkpoint is actually on disk, in registry order."""
     return {k: v for k, v in MODELS.items() if (REPO / v[1]).exists()}
+
+
+def default_index(models):
+    """Where the picker should open: the registry default if its checkpoint is
+    present, else the first head that is."""
+    keys = list(models)
+    return keys.index(DEFAULT_KEY) if DEFAULT_KEY in keys else 0
 
 
 def defaults():
