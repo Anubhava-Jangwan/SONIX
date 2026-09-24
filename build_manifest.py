@@ -207,7 +207,7 @@ def main():
                   f"{', '.join(clash)}\n  {args.corpus} is no longer held out.",
                   file=sys.stderr)
             sys.exit(2)
-        print(f"\ndisjoint from {args.check_disjoint}: OK ({len(other)} speakers checked)")
+        print(f"\ndisjoint from {args.check_disjoint}: OK ({len(speakers)} speakers checked)")
     if args.speakers_out:
         Path(args.speakers_out).write_text("\n".join(speakers) + "\n")
         print(f"\nwrote {args.speakers_out}  ({len(speakers)} speakers)")

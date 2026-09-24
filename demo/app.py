@@ -20,8 +20,8 @@ if str(HERE) not in sys.path:
 
 import ui                                                      # noqa: E402
 from core import (available_models, bands_from, clip_facts,    # noqa: E402
-                  clip_picker, defaults, REPO, short_clip_warning,
-                  threshold_controls)
+                  clip_picker, default_index, defaults, REPO,
+                  short_clip_warning, threshold_controls)
 
 st.set_page_config(page_title="SONIX", page_icon=":material/graphic_eq:",
                    layout="wide", initial_sidebar_state="collapsed")
@@ -112,8 +112,8 @@ for col, (l, v, s, tone) in zip(cols, [
         ("Eval EER", "1.49%", "ASVspoof-2019 LA, in-domain", ""),
         ("Front-end", "300M", "wav2vec2 XLS-R, frozen", ""),
         ("Latency", "0.5 s", "hop, on a 4.0 s window", ""),
-        ("Heads", f"{len(models)}/3", "swappable, shared front-end",
-         ui.AMBER if len(models) < 3 else ui.GREEN)]):
+        ("Heads", str(len(models)), "swappable, shared front-end",
+         ui.GREEN if models else ui.AMBER)]):
     col.markdown(ui.stat(l, v, s, tone), unsafe_allow_html=True)
 
 st.write("")
@@ -153,6 +153,7 @@ else:
         rec = st.audio_input("Record a few seconds of speech", key="mic")
     with lc2:
         live_key = st.selectbox("Head", list(models), key="mic_head",
+                                index=default_index(models),
                                 format_func=lambda k: models[k][0])
         st.caption("Speak for at least 4 seconds — that is one window. "
                    "Shorter clips get repeat-padded, which shifts the score.")
@@ -211,6 +212,7 @@ if models:
         dur, n_win, sr = clip_facts(path)
         st.audio(str(path))
         key = st.selectbox("Model head", list(models), key="file_head",
+                           index=default_index(models),
                            format_func=lambda k: models[k][0],
                            help="The 300M front-end is frozen and shared; only "
                                 "this ~300k-param head changes.")
@@ -252,29 +254,42 @@ else:
     else:
         cdur, cwin, _ = clip_facts(cpath)
         short_clip_warning(cdur, cwin)
-        if st.button("Run every head on this clip", type="primary",
-                     use_container_width=True, key="cmp_run"):
-            for mk in models:
+        # The front-end is shared but not cached across heads: every head
+        # selected here costs one more full pass of the 300M model. With nine
+        # registered heads "run everything" is a several-minute button, so the
+        # set is chosen explicitly and defaults to the three worth contrasting.
+        pick = st.multiselect(
+            "Heads to compare", list(models), key="cmp_heads",
+            default=[k for k in ("v3", "robust_v2", "baseline") if k in models],
+            format_func=lambda k: models[k][0],
+            help="Each head adds a full pass of the frozen front-end.")
+
+        if st.button(f"Run {len(pick)} head(s) on this clip", type="primary",
+                     use_container_width=True, key="cmp_run",
+                     disabled=not pick):
+            for mk in pick:
                 got = score_clip(cpath, mk, cwin, f"{models[mk][0]}: ")
                 if got:
                     st.session_state["scores"][f"{cname}::{mk}"] = got
 
-        have = {k: st.session_state["scores"].get(f"{cname}::{k}") for k in models}
+        have = {k: st.session_state["scores"].get(f"{cname}::{k}") for k in pick}
         have = {k: v for k, v in have.items() if v}
         if have:
             amber, red = st.session_state["amber"], st.session_state["red"]
-            for col, (mk, raw) in zip(st.columns(len(have)), have.items()):
-                sm, bands = bands_from(raw, amber, red)
-                flagged = sum(b != "GREEN" for b in bands)
-                worst = max(bands, key=lambda b: _RANK[b])
-                col.markdown(ui.stat(models[mk][0], worst,
-                                     f"peak {max(raw):.0%} &middot; "
-                                     f"{flagged}/{len(bands)} flagged",
-                                     ui.BAND[worst]), unsafe_allow_html=True)
+            rows = list(have.items())
+            for start in range(0, len(rows), 4):      # 4 per row, not 9 abreast
+                for col, (mk, raw) in zip(st.columns(4), rows[start:start + 4]):
+                    sm, bands = bands_from(raw, amber, red)
+                    flagged = sum(b != "GREEN" for b in bands)
+                    worst = max(bands, key=lambda b: _RANK[b])
+                    col.markdown(ui.stat(models[mk][0], worst,
+                                         f"peak {max(raw):.0%} &middot; "
+                                         f"{flagged}/{len(bands)} flagged",
+                                         ui.BAND[worst]), unsafe_allow_html=True)
             if len(have) > 1:
                 import plotly.graph_objects as go
                 fig = ui.timeline([], [], [], amber, red, height=320)
-                pal = [ui.ACCENT, ui.ACCENT_2, "#C084FC"]
+                pal = ui.SERIES
                 for n, (mk, raw) in enumerate(have.items()):
                     sm, _ = bands_from(raw, amber, red)
                     fig.add_trace(go.Scatter(
@@ -287,8 +302,8 @@ else:
                 widest = max(len(v) for v in have.values()) * 0.5 + 1
                 fig.update_xaxes(range=[0, max(5.0, widest)])
                 st.plotly_chart(fig, use_container_width=True, key="cmp_tl")
-                st.caption("Smoothed series only - three sets of raw points on "
-                           "one axis is noise, not evidence.")
+                st.caption("Smoothed series only - several sets of raw points "
+                           "on one axis is noise, not evidence.")
 
 st.markdown('<hr class="sx-rule">', unsafe_allow_html=True)
 

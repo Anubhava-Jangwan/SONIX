@@ -31,6 +31,12 @@ ACCENT_2 = "#22D3EE"        # cyan, second stop of the brand gradient
 
 GREEN, AMBER, RED = "#34D399", "#FBBF24", "#FB7185"
 BAND = {"GREEN": GREEN, "AMBER": AMBER, "RED": RED}
+
+# One line colour per registered head in the compare chart. Must stay at least
+# as long as realtime.models.REGISTRY -- a shorter list cycles, and two heads
+# drawn in the same colour is a misread chart, not a cosmetic issue.
+SERIES = [ACCENT, ACCENT_2, "#C084FC", "#34D399", "#FBBF24",
+          "#FB7185", "#60A5FA", "#F472B6", "#A3E635"]
 BAND_GLOW = {"GREEN": "52,211,153", "AMBER": "251,191,36", "RED": "251,113,133"}
 BAND_ACTION = {
     "GREEN": "Consistent with a real voice. Proceed normally.",
