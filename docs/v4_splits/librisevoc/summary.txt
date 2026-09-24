@@ -1,0 +1,13 @@
+root: F:\librisevoc\wav
+seed: 0   per_vocoder: 4200   vocoders: diffwave, melgan, parallel_wave_gan, wavegrad, wavenet, wavernn
+gt/ names: 13201   common to all folders: 13201
+  diffwave                13201 files, 4200 selected
+  melgan                  13201 files, 4200 selected
+  parallel_wave_gan       13201 files, 4200 selected
+  wavegrad                13201 files, 4200 selected
+  wavenet                 13201 files, 4200 selected
+  wavernn                 13201 files, 4200 selected
+coverage of common names (times used across vocoders):
+  1x: 1202
+  2x: 11999
+gt/ is extracted in full (no list); only vocoders use lists.
