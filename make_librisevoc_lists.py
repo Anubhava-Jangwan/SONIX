@@ -15,7 +15,9 @@ WHY NOT --limit
 
 WHAT THIS DOES
     1. Reads the names in <root>/gt and in each vocoder folder beside it.
-    2. Keeps the names present in gt AND in every vocoder (the common set).
+       Vocoder files are <utterance>_gen.wav, gt files <utterance>.wav; the
+       _gen suffix is ignored for matching, and each list keeps the real name.
+    2. Keeps the utterances present in gt AND in every vocoder (the common set).
     3. Shuffles the common set with a fixed seed and lays it end to end
        (perm, perm, perm, ...). Vocoder k (sorted by name) takes slice k of
        length --per-vocoder. A slice never repeats a name, because it is shorter
@@ -49,13 +51,26 @@ from pathlib import Path
 AUDIO = (".wav", ".flac")
 
 
+GEN = "_gen"   # LibriSeVoc vocoder files are <utterance>_gen.wav; gt is <utterance>.wav
+
+
+def utt(stem: str) -> str:
+    """Utterance id shared by gt and every vocoder: the stem without _gen."""
+    return stem[:-len(GEN)] if stem.endswith(GEN) else stem
+
+
 def names_in(folder: Path) -> dict:
-    """stem -> filename, for audio files directly inside folder (no recursion,
-    matching --audio-dir)."""
+    """utterance id -> filename, for audio files directly inside folder (no
+    recursion, matching --audio-dir). Vocoder names carry a _gen suffix that gt
+    names do not; both map to the same utterance id."""
     out = {}
     for f in folder.iterdir():
         if f.is_file() and f.suffix.lower() in AUDIO:
-            out[f.stem] = f.name
+            key = utt(f.stem)
+            if key in out:
+                sys.exit(f"FATAL: {folder.name}/ has two files for utterance "
+                         f"{key}: {out[key]} and {f.name}")
+            out[key] = f.name
     return out
 
 

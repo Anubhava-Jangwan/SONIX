@@ -57,6 +57,18 @@ USAGE
     python src/train.py --emb-root outputs/embeddings_v2 \\
         --manifest outputs/manifest_v4.csv --out outputs/models/head_v4.pt
 
+    # v4.0, before the S1 manifest exists: one root per corpus / per vocoder
+    python src/train.py --derive-groups --emb-root outputs/embeddings_v2 \\
+        --extra-emb-root <...>_indicvoices_tr --extra-emb-root <...>_indicsynth \\
+        --extra-emb-root <...>_mlaad --extra-emb-root <...>_librisevoc_gt \\
+        --extra-emb-root <...>_librisevoc_diffwave   (one per vocoder) \\
+        --lang-table docs/v4_splits/chunks.csv \\
+        --durations <duration csvs> --min-dur 4.0
+
+    LibriSeVoc: files are NOT renamed. Every vocoder names an utterance
+    <utt>_gen, so the vocoder comes from the root name (..._librisevoc_<voc>)
+    and gt/fakes of one speaker share a dev-carve id.
+
     # ablate the pieces
     python src/train.py ... --loss bce --aux-weight 0.0     # v3 behaviour + groups
     python src/train.py ... --loss ocsoftmax --aux-weight 0.3
@@ -66,6 +78,7 @@ import argparse
 import csv
 import json
 import os
+import re
 import sys
 from collections import Counter, defaultdict
 from pathlib import Path
@@ -235,6 +248,13 @@ def load_manifest(path: str):
 
     This is the preferred source and the only one that is not inference. The
     schema is brief section 1's, verbatim.
+
+    STEM COLLISIONS. LibriSeVoc names every vocoder's copy of an utterance the
+    same (<utt>_gen), so six roots share one stem. Keyed by stem alone, the last
+    row read would silently win for all six. A manifest with repeated stems must
+    therefore carry an extra `emb_root` column (the embedding root's folder
+    name), and the join becomes (emb_root, stem). Repeated stems without it stop
+    the run rather than join to the wrong row.
     """
     p = Path(path)
     if not p.exists():
@@ -245,10 +265,173 @@ def load_manifest(path: str):
         if missing:
             sys.exit(f"FATAL: {p} is missing column(s) {missing}.\n"
                      f"       S1 schema is: {', '.join(MANIFEST_COLUMNS)}")
-        out = {}
+        by_root = "emb_root" in (rdr.fieldnames or [])
+        out, dup = {}, []
         for r in rdr:
-            out[Path(r["path"]).stem] = r
-    print(f"  manifest: {len(out)} rows from {p}")
+            stem = Path(r["path"].replace("\\", "/")).stem
+            key = (Path(r["emb_root"].replace("\\", "/")).name, stem) if by_root else stem
+            if key in out:
+                dup.append(key)
+            r["language"] = norm_lang(r["language"], f"{p} row {stem}")
+            out[key] = r
+    if dup:
+        hint = ("" if by_root else
+                "\n       Add an `emb_root` column (the embedding root folder "
+                "name) so the join\n       is (emb_root, stem) -- LibriSeVoc "
+                "vocoders all share one stem per utterance.")
+        sys.exit(f"FATAL: {len(dup)} repeated join key(s) in {p}, e.g. "
+                 f"{dup[:3]}.{hint}")
+    print(f"  manifest: {len(out)} rows from {p}"
+          f"{'  (joined on emb_root + stem)' if by_root else ''}")
+    return {"rows": out, "by_root": by_root}
+
+
+# --- language ---------------------------------------------------------------
+# One code per language across every corpus. Without this, IndicSynth says
+# "bengali", MMS-TTS says "ben" and a manifest says "bn" -- three groups for one
+# language, and eval_cells scores Bengali fakes against no Bengali bonafide.
+LANG_ALIASES = {
+    "en": ("en", "eng", "english"),
+    "hi": ("hi", "hin", "hindi"),
+    "bn": ("bn", "ben", "bengali", "bangla"),
+    "ta": ("ta", "tam", "tamil"),
+    "te": ("te", "tel", "telugu"),
+    "mr": ("mr", "mar", "marathi"),
+    "gu": ("gu", "guj", "gujarati"),
+    "kn": ("kn", "kan", "kannada"),
+    "ml": ("ml", "mal", "malayalam"),
+    "pa": ("pa", "pan", "punjabi", "panjabi"),
+    "or": ("or", "ory", "ori", "odia", "oriya"),
+    "as": ("as", "asm", "assamese"),
+    "ur": ("ur", "urd", "urdu"),
+    "sa": ("sa", "san", "sanskrit"),
+    "ne": ("ne", "nep", "npi", "nepali"),
+    "mai": ("mai", "maithili"),
+    "kok": ("kok", "gom", "konkani"),
+    "doi": ("doi", "dogri"),
+    "sd": ("sd", "snd", "sindhi"),
+    "ks": ("ks", "kas", "kashmiri"),
+    "mni": ("mni", "manipuri"),
+    "brx": ("brx", "bodo"),
+    "sat": ("sat", "santali"),
+}
+LANG = {a: code for code, al in LANG_ALIASES.items() for a in al}
+
+
+def norm_lang(raw, where=""):
+    """Any spelling -> one code. An unknown spelling stops the run: a language
+    is one of the two balancing axes, and a guessed one is a wrong group."""
+    k = str(raw).strip().lower().replace("-", "_")
+    if k in LANG:
+        return LANG[k]
+    sys.exit(f"FATAL: language {raw!r} ({where}) is not in LANG_ALIASES in "
+             f"src/train.py.\n       Add the spelling there. Nothing guesses a "
+             f"language.")
+
+
+# filename tokens that name a corpus or a copy, never a language
+NAME_PREFIXES = {"aug", "indicsynth", "mlaad", "mms", "tts"}
+
+
+def lang_from_name(stem, where):
+    """First token after the corpus/copy prefixes must be a language.
+
+      indicsynth_Bengali_00000 -> bn      mlaad_hi_<model>_00012 -> hi
+      ben_tts_00000            -> bn      aug_ben_tts_00000      -> bn
+    """
+    toks = stem.split("_")
+    i = 0
+    while i < len(toks) - 1 and toks[i].lower() in NAME_PREFIXES:
+        i += 1
+    return norm_lang(toks[i], f"{where}: {stem}")
+
+
+# --- lookup tables for names that carry no language ---------------------------
+# IndicVoices chunks are <uuid>_<n>_chunk_<k> -- no language in the name at all.
+# Navya's chunks.csv has it. Columns are matched loosely so her file works as
+# it is: a key column (chunk/file/path/name/stem/recording_id/uuid/...), a
+# language column, and optionally a speaker column.
+KEY_COLS = ("chunk", "chunk_name", "chunk_id", "file", "filename", "file_name",
+            "path", "name", "stem", "recording_id", "recording", "uuid", "id")
+LANG_COLS = ("language", "lang", "language_code")
+SPK_COLS = ("speaker", "speaker_id", "spk", "spk_id")
+DUR_COLS = ("duration", "duration_s", "dur", "seconds", "secs", "length_s",
+            "duration_sec")
+
+
+def _pick(cols, wanted):
+    low = {c.lower().strip(): c for c in cols}
+    return next((low[c] for c in wanted if c in low), None)
+
+
+def _key_of(v):
+    return Path(str(v).strip().replace("\\", "/")).stem
+
+
+def strip_chunk(stem):
+    return re.sub(r"_chunk_\d+.*$", "", stem)
+
+
+def load_lang_table(paths):
+    """--lang-table CSV(s) -> {stem or recording id: (lang, speaker)}."""
+    out = {}
+    for p in paths or []:
+        p = Path(p)
+        if not p.exists():
+            sys.exit(f"FATAL: --lang-table {p} not found.")
+        with open(p, newline="", encoding="utf-8-sig") as fh:
+            rdr = csv.DictReader(fh)
+            cols = rdr.fieldnames or []
+            k, l, s = _pick(cols, KEY_COLS), _pick(cols, LANG_COLS), _pick(cols, SPK_COLS)
+            if not k or not l:
+                sys.exit(f"FATAL: --lang-table {p} needs a key column "
+                         f"({'/'.join(KEY_COLS[:6])}/...) and a language column; "
+                         f"it has {cols}")
+            n = 0
+            for r in rdr:
+                key = _key_of(r[k])
+                lang = norm_lang(r[l], f"{p} row {key}")
+                spk = str(r[s]).strip() if s else ""
+                for kk in {key, strip_chunk(key)}:
+                    prev = out.get(kk)
+                    if prev and prev[0] != lang:
+                        sys.exit(f"FATAL: {kk} is {prev[0]} and {lang} in "
+                                 f"--lang-table. Fix the table.")
+                    out[kk] = (lang, spk or (prev[1] if prev else ""))
+                n += 1
+        print(f"  lang-table: {n} rows from {p}"
+              f"{'' if s else '  (no speaker column)'}")
+    return out
+
+
+def load_durations(paths):
+    """--durations CSV(s) -> {stem: seconds}. A stem listed twice with different
+    durations (LibriSeVoc vocoders) maps to None = unmeasured, never to a pick."""
+    out = {}
+    for p in paths or []:
+        p = Path(p)
+        if not p.exists():
+            sys.exit(f"FATAL: --durations {p} not found.")
+        with open(p, newline="", encoding="utf-8-sig") as fh:
+            rdr = csv.DictReader(fh)
+            cols = rdr.fieldnames or []
+            k, d = _pick(cols, KEY_COLS), _pick(cols, DUR_COLS)
+            if not k or not d:
+                sys.exit(f"FATAL: --durations {p} needs a key column and a "
+                         f"duration column ({'/'.join(DUR_COLS)}); it has {cols}")
+            n = 0
+            for r in rdr:
+                key = _key_of(r[k])
+                try:
+                    v = float(r[d])
+                except (TypeError, ValueError):
+                    continue
+                if key in out and out[key] is not None and abs(out[key] - v) > 0.05:
+                    out[key] = None
+                elif key not in out:
+                    out[key] = v
+                n += 1
+        print(f"  durations: {n} rows from {p}")
     return out
 
 
@@ -259,37 +442,73 @@ def load_manifest(path: str):
 # trainer is runnable before S1 lands, not as a substitute for S1.
 DERIVE_RULES = (
     # (root substring, corpus, language, generator_family, recording_id)
-    ("indicsynth",     "indicsynth",  "from_name_2", "indicsynth", "stem"),
-    ("indicvoices",    "indicvoices", "und",         "bonafide",   "strip_chunk"),
-    ("mms_tts",        "mms_tts",     "from_name_0", "mms_tts",    "stem"),
-    ("",               "asvspoof19",  "en",          "from_attack", "stem"),
+    # First match wins, so the empty-substring ASVspoof catch-all stays last.
+    ("indicsynth",  "indicsynth",  "from_name",  "indicsynth",  "stem"),
+    ("indicvoices", "indicvoices", "from_table", "bonafide",    "speaker_or_chunk"),
+    ("mms_tts",     "mms_tts",     "from_name",  "mms_tts",     "stem"),
+    ("mlaad",       "mlaad",       "from_name",  "mlaad",       "stem"),
+    ("librisevoc",  "librisevoc",  "en",         "from_root",   "strip_gen"),
+    ("",            "asvspoof19",  "en",         "from_attack", "stem"),
 )
 
 
 def derive_rule_for(root: str):
-    name = Path(root).resolve().name
+    name = Path(root).resolve().name.lower()
     for sub, corpus, lang, fam, rec in DERIVE_RULES:
         if sub in name:
             return corpus, lang, fam, rec
     raise AssertionError("the empty-substring rule must always match")
 
 
-def derive_group(root, stem, rule, attack_of):
+def _librisevoc_family(root):
+    """embeddings_v2_librisevoc_<vocoder> -> <vocoder>; ..._gt -> bonafide.
+
+    LibriSeVoc gives every vocoder's copy of an utterance the same filename
+    (<utt>_gen), so the vocoder can only come from the root. Navya's roots are
+    one per vocoder for exactly this reason; files are never renamed."""
+    name = Path(root).resolve().name.lower()
+    tail = name.split("librisevoc", 1)[1].strip("_- ")
+    if not tail:
+        sys.exit(f"FATAL: {root}: a LibriSeVoc root must be named "
+                 f"..._librisevoc_<vocoder> or ..._librisevoc_gt, one root per "
+                 f"folder, because the filenames do not say which vocoder.")
+    return "bonafide" if tail in ("gt", "real", "bonafide") else tail
+
+
+def derive_group(root, stem, rule, attack_of, lang_table=None):
     corpus, lang, fam, rec = rule
-    if lang == "from_name_2":          # indicsynth_Bengali_00000 -> Bengali
-        parts = stem.split("_")
-        lang = parts[1].lower() if len(parts) > 2 else "und"
-    elif lang == "from_name_0":        # ben_tts_00000 -> ben
-        lang = stem.split("_")[0].lower()
+    speaker = ""
+    if lang == "from_name":
+        lang = lang_from_name(stem, corpus)
+    elif lang == "from_table":
+        hit = None
+        if lang_table:
+            hit = lang_table.get(stem) or lang_table.get(strip_chunk(stem))
+        if hit is None:
+            return None                 # caller collects and stops the run
+        lang, speaker = hit
+    else:
+        lang = norm_lang(lang, corpus)
 
     if fam == "from_attack":           # ASVspoof: the attack id IS the family
         fam = attack_of.get(stem, "UNKNOWN")
         if fam == "-":
             fam = "bonafide"
+    elif fam == "from_root":
+        fam = _librisevoc_family(root)
 
-    if rec == "strip_chunk":           # 1407..._chunk_2.flac -> 1407...
-        import re
-        recording = re.sub(r"_chunk_\d+.*$", "", stem)
+    if rec == "speaker_or_chunk":
+        # With a speaker column, the dev carve is SPEAKER-disjoint, not just
+        # recording-disjoint: IndicVoices train/holdout already leaked 682
+        # speakers once, and a same-speaker dev clip scores the speaker.
+        recording = f"spk:{corpus}:{speaker}" if speaker else strip_chunk(stem)
+    elif rec == "strip_gen":
+        # LibriSpeech names are <speaker>_<chapter>_<utt>; gt <utt> and every
+        # vocoder's <utt>_gen share them. Carving on the SPEAKER keeps an
+        # utterance, all its fakes and every other clip of that voice on one
+        # side of the dev carve -- speaker-disjoint, like IndicVoices.
+        speaker = stem.split("_")[0]
+        recording = f"spk:{corpus}:{speaker}"
     else:
         recording = stem
 
@@ -302,7 +521,7 @@ def derive_group(root, stem, rule, attack_of):
             channel = tag
             break
     return {"corpus": corpus, "language": lang, "generator_family": fam,
-            "recording_id": recording, "channel": channel}
+            "recording_id": recording, "channel": channel, "speaker": speaker}
 
 
 def load_attack_ids(data_root="data/asvspoof19_la"):
@@ -327,7 +546,8 @@ def load_attack_ids(data_root="data/asvspoof19_la"):
     return out
 
 
-def attach_groups(files, y, root, manifest, derive, attack_of, strict):
+def attach_groups(files, y, root, manifest, derive, attack_of, strict,
+                  lang_table=None):
     """Per-row group metadata for one root. Returns a list of dicts, row-aligned.
 
     A row whose group cannot be established stops the run. Brief section 2
@@ -335,13 +555,16 @@ def attach_groups(files, y, root, manifest, derive, attack_of, strict):
     a wrong group silently corrupts both the sampling weights and the
     worst-group metric that selects the checkpoint.
     """
-    rows, unknown = [], []
+    rows, unknown, no_lang, mislabel = [], [], [], []
     rule = derive_rule_for(root) if derive else None
+    mrows = manifest["rows"] if manifest else None
+    rname = Path(root).resolve().name
 
     for i, stem in enumerate(files):
         key = Path(stem).stem            # indicvoices names carry a .flac suffix
-        if manifest is not None and key in manifest:
-            m = manifest[key]
+        mkey = (rname, key) if manifest and manifest["by_root"] else key
+        if mrows is not None and mkey in mrows:
+            m = mrows[mkey]
             # the manifest's own label must agree with the shard sidecar.
             # extract_embeddings.py:89 stamps label 0 on every --audio-dir row,
             # so a spoof-only folder comes back labelled bonafide; catching that
@@ -361,15 +584,39 @@ def attach_groups(files, y, root, manifest, derive, attack_of, strict):
                          "recording_id": m["recording_id"],
                          "channel": m.get("channel", "clean"), "source": "manifest"})
         elif derive:
-            g = derive_group(root, key, rule, attack_of)
+            g = derive_group(root, key, rule, attack_of, lang_table)
+            if g is None:
+                no_lang.append(key)
+                rows.append(None)
+                continue
             if g["generator_family"] == "UNKNOWN":
                 unknown.append(key)
+            # family and shard label must agree. Every --audio-dir root comes
+            # out labelled 0, so a fake root that missed stamp_labels.py would
+            # otherwise train as bonafide -- the same poison as above.
+            elif (g["generator_family"] == "bonafide") != (int(y[i]) == 0):
+                mislabel.append(key)
             g["source"] = "derived"
             rows.append(g)
         else:
             unknown.append(key)
             rows.append(None)
 
+    if no_lang:
+        sys.exit(f"FATAL: {len(no_lang)} rows in {root} have no language "
+                 f"(e.g. {', '.join(no_lang[:3])}).\n"
+                 f"       Their names carry none. Pass --lang-table with Navya's "
+                 f"chunks.csv\n       (key column + language [+ speaker]). A "
+                 f"language is never guessed.")
+    if mislabel:
+        n1 = int((np.asarray(y) == 1).sum())
+        sys.exit(f"FATAL: {len(mislabel)} rows in {root} have a shard label "
+                 f"that contradicts the folder (e.g. {', '.join(mislabel[:3])}).\n"
+                 f"       Shard says {n1} spoof / {len(y) - n1} bonafide. If this "
+                 f"is a FAKE root, it was\n       extracted with --audio-dir "
+                 f"(labels every row 0) and never stamped:\n"
+                 f"         python stamp_labels.py --emb-dir {root}\\train "
+                 f"--label 1")
     if unknown:
         head = ", ".join(unknown[:5])
         if manifest is None and not derive:
@@ -387,6 +634,56 @@ def attach_groups(files, y, root, manifest, derive, attack_of, strict):
                  f"generator family (e.g. {head}). They are absent from the "
                  f"manifest and from every ASVspoof protocol.")
     return rows
+
+
+def duration_filter(files, y, rows, durations, min_dur):
+    """-> (keep mask, [(label, n, measured, short, dropped)]).
+
+    Short = measured duration below 4.0 s (the extractor's crop) or below
+    --min-dur when given. Dropping happens only with --min-dur, and only for
+    MEASURED rows; an unmeasured row is kept and shows up as n - measured."""
+    thr = 4.0 if min_dur is None else min_dur
+    keep = np.ones(len(files), dtype=bool)
+    stats = {}
+    for i, f in enumerate(files):
+        d = durations.get(Path(f).stem)
+        lab = int(y[i])
+        st = stats.setdefault(lab, [0, 0, 0, 0])
+        st[0] += 1
+        if d is None:
+            continue
+        st[1] += 1
+        if d < thr:
+            st[2] += 1
+            if min_dur is not None:
+                keep[i] = False
+                st[3] += 1
+    return keep, [(lab, *v) for lab, v in sorted(stats.items())]
+
+
+def report_durations(log, min_dur):
+    """The padding shortcut, measured. If one class is much shorter than the
+    other in some corpus, zero-padding is a label cue for that corpus."""
+    thr = 4.0 if min_dur is None else min_dur
+    agg = defaultdict(lambda: [0, 0, 0, 0])
+    for corpus, lab, n, meas, short, drop in log:
+        a = agg[(corpus, lab)]
+        for j, v in enumerate((n, meas, short, drop)):
+            a[j] += v
+    print(f"\n  durations (short = under {thr:g} s, i.e. zero-padded by the "
+          f"extractor):")
+    print(f"  {'corpus':<14}{'label':<8}{'rows':>8}{'measured':>10}"
+          f"{'short':>8}{'short%':>8}{'dropped':>9}")
+    for (corpus, lab), (n, meas, short, drop) in sorted(agg.items()):
+        pct = f"{100 * short / meas:6.1f}%" if meas else "     -"
+        print(f"  {corpus:<14}{'spoof' if lab else 'bona':<8}{n:>8}{meas:>10}"
+              f"{short:>8}{pct:>8}{drop:>9}")
+    unmeasured = sum(n - meas for (_c, _l), (n, meas, _s, _d) in agg.items())
+    if unmeasured:
+        print(f"  NOTE: {unmeasured} rows have no measured duration and were "
+              f"kept as they are.")
+    if min_dur is None:
+        print("  (report only -- pass --min-dur 4.0 to drop the short rows)")
 
 
 # ===========================================================================
@@ -433,7 +730,7 @@ def group_weights(gid, n_groups, max_weight=None):
     return w.astype(np.float32), counts
 
 
-def carve_dev(recording_ids, gid, n_groups, dev_frac, seed):
+def carve_dev(recording_ids, gid, n_groups, dev_frac, seed, group_langs=None):
     """Hold out dev by RECORDING, stratified so every group keeps a dev cell.
 
     Brief section 2 rule 3: recording-level holdout, never row-level.
@@ -456,21 +753,27 @@ def carve_dev(recording_ids, gid, n_groups, dev_frac, seed):
     by_rec = defaultdict(list)
     for i, r in enumerate(recs):
         by_rec[r].append(i)
-    rec_group, split_recs = {}, 0
+    # A recording may legitimately span groups: LibriSeVoc's gt utterance and
+    # its vocoder copies share one recording id on purpose, and so do the
+    # conditioned copies. It is stratified under its RAREST group, so a starved
+    # cell is never outvoted out of dev. Only a recording spanning LANGUAGES
+    # means the metadata is wrong upstream.
+    sizes = np.bincount(gid, minlength=n_groups)
+    lang_of = group_langs if group_langs is not None else None
+    rec_group, multi_lang = {}, 0
     for r, idxs in by_rec.items():
-        gs = Counter(gid[i] for i in idxs)
-        rec_group[r] = gs.most_common(1)[0][0]
-        if len(gs) > 1:
-            split_recs += 1
-    if split_recs:
-        print(f"  WARNING: {split_recs} recording(s) span more than one group; "
-              f"each was assigned to its majority group. That means language or "
-              f"generator_family disagrees between chunks of one recording -- "
-              f"worth fixing upstream in the manifest.")
+        gs = {int(gid[i]) for i in idxs}
+        rec_group[r] = min(gs, key=lambda g: (sizes[g], g))
+        if lang_of is not None and len({lang_of[g] for g in gs}) > 1:
+            multi_lang += 1
+    if multi_lang:
+        print(f"  WARNING: {multi_lang} recording(s) span more than one LANGUAGE. "
+              f"Chunks of one recording\n  disagree on language -- fix that "
+              f"upstream (lang-table / manifest).")
 
     dev_recs = set()
     for g in range(n_groups):
-        rs = np.array([r for r, gg in rec_group.items() if gg == g])
+        rs = np.array(sorted(r for r, gg in rec_group.items() if gg == g))
         if len(rs) == 0:
             continue
         k = int(round(len(rs) * dev_frac))
@@ -480,6 +783,13 @@ def carve_dev(recording_ids, gid, n_groups, dev_frac, seed):
         k = max(1, min(k, len(rs) - 1)) if len(rs) > 1 else 0
         if k:
             dev_recs.update(rng.choice(rs, size=k, replace=False).tolist())
+
+    # coverage pass: a group whose recordings were all stratified under some
+    # other group can still end with no dev rows. Give it one recording.
+    for g in range(n_groups):
+        mine = sorted({recs[i] for i in np.flatnonzero(gid == g)})
+        if len(mine) > 1 and not any(r in dev_recs for r in mine):
+            dev_recs.add(mine[int(rng.integers(len(mine)))])
 
     mask = np.array([r in dev_recs for r in recs], dtype=bool)
     return mask
@@ -727,6 +1037,23 @@ def build_argparser():
                     help="infer language/family/recording_id from folder and "
                          "file names when no manifest exists. A STOPGAP -- see "
                          "the warning it prints.")
+    ap.add_argument("--lang-table", default=None, action="append", metavar="CSV",
+                    help="REPEATABLE. CSV giving language (and optionally "
+                         "speaker) for names that carry none -- IndicVoices. "
+                         "Navya's chunks.csv works as is: any key column "
+                         "(chunk/file/path/name/stem/recording_id/uuid) plus "
+                         "language [+ speaker]. With a speaker column the "
+                         "IndicVoices dev carve is speaker-disjoint.")
+    ap.add_argument("--durations", default=None, action="append", metavar="CSV",
+                    help="REPEATABLE. CSV of clip durations (key column + "
+                         "duration/seconds). Always reported per corpus x label; "
+                         "used to drop rows with --min-dur.")
+    ap.add_argument("--min-dur", type=float, default=None,
+                    help="drop rows whose MEASURED duration is below this many "
+                         "seconds (4.0 = the extractor's crop). Clips under 4 s "
+                         "are zero-padded, and IndicVoices is 36%% short against "
+                         "~0%% for IndicSynth, so padding alone would read as "
+                         "'real'. Unmeasured rows are kept and counted.")
     ap.add_argument("--data-root", default="data/asvspoof19_la",
                     help="for the CM protocols, which give ASVspoof its "
                          "generator family (the attack id) under --derive-groups")
@@ -787,6 +1114,8 @@ def main(argv=None) -> int:
 
     manifest = load_manifest(args.manifest) if args.manifest else None
     attack_of = load_attack_ids(args.data_root) if args.derive_groups else {}
+    lang_table = load_lang_table(args.lang_table)
+    durations = load_durations(args.durations)
     if args.derive_groups:
         print("  --derive-groups: inferring metadata from folder and file names.\n"
               "  This is the state brief section 1 exists to end. Build the S1 "
@@ -798,17 +1127,29 @@ def main(argv=None) -> int:
     # ---- load every root -------------------------------------------------
     roots = [args.emb_root] + list(args.extra_emb_root or [])
     print(f"\nloading {len(roots)} root(s):")
-    Xs, ys, gm, prov = [], [], [], []
+    Xs, ys, gm, prov, dur_log = [], [], [], [], []
     for r in roots:
         X, y, files, meta = load_root(r, "train", args.layer)
         rows = attach_groups(files, y, r, manifest, args.derive_groups,
-                             attack_of, strict=True)
+                             attack_of, strict=True, lang_table=lang_table)
+        n_in = len(X)
+        dur_stats = None
+        if durations:
+            keep, dur_stats = duration_filter(files, y, rows, durations,
+                                              args.min_dur)
+            dur_log += [(rows[0]["corpus"], *t) for t in dur_stats]
+            if not keep.all():
+                X, y = X[keep], y[keep]
+                rows = [g for g, k in zip(rows, keep) if k]
         recs = [d["recording_id"] for d in rows]
         Xs.append(X)
         ys.append(y)
         gm += rows
-        prov.append({"root": r, "n": int(len(X)), "meta": meta,
-                     "n_recordings": len(set(recs))})
+        prov.append({"root": r, "n": int(len(X)), "n_before_min_dur": int(n_in),
+                     "meta": meta, "n_recordings": len(set(recs)),
+                     "durations": dur_stats})
+    if dur_log:
+        report_durations(dur_log, args.min_dur)
 
     dims = {x.shape[1] for x in Xs}
     if len(dims) > 1:
@@ -829,7 +1170,8 @@ def main(argv=None) -> int:
     print(f"\n{len(X)} rows, {n_groups} training groups, "
           f"{len(set(recordings))} recordings")
 
-    dev_mask = carve_dev(recordings, gid, n_groups, args.dev_frac, args.dev_seed)
+    dev_mask = carve_dev(recordings, gid, n_groups, args.dev_frac, args.dev_seed,
+                         group_langs=[k[0] for k in order])
     tr_mask = ~dev_mask
     if dev_mask.sum() == 0:
         sys.exit("FATAL: the dev carve is empty. Raise --dev-frac.")
@@ -1023,6 +1365,8 @@ def main(argv=None) -> int:
         "provenance": {"roots": prov, "layer": args.layer,
                        "group_source": "manifest" if manifest else "derived",
                        "manifest": args.manifest,
+                       "lang_table": args.lang_table,
+                       "durations": args.durations, "min_dur": args.min_dur,
                        "dev_frac": args.dev_frac, "dev_seed": args.dev_seed,
                        "argv": sys.argv[1:]},
         "front_end": "facebook/wav2vec2-xls-r-300m",
