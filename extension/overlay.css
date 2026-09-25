@@ -109,8 +109,21 @@
   color: transparent;
 }
 
-#sonix-panel .sonix-toggle {
+#sonix-panel .sonix-ver {
   margin-left: auto;
+  font-size: 9.5px;
+  font-weight: 600;
+  letter-spacing: .06em;
+  color: var(--ink-3);
+  font-variant-numeric: tabular-nums;
+  background: var(--surface);
+  border: 1px solid var(--edge);
+  border-radius: 20px;
+  padding: 2px 7px;
+}
+
+#sonix-panel .sonix-toggle {
+  margin-left: 8px;
   background: var(--surface);
   border: 1px solid var(--edge);
   color: var(--ink-2);
@@ -278,6 +291,142 @@
   outline: 2px solid var(--accent);
   outline-offset: 3px;
 }
+
+/* --- participants -------------------------------------------------------- */
+#sonix-panel .sonix-people {
+  flex: none;
+  border: 1px solid var(--edge);
+  border-radius: 15px;
+  background: linear-gradient(180deg, var(--raised), var(--surface));
+  padding: 12px 12px 10px;
+}
+
+#sonix-panel .sonix-people-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+
+#sonix-panel .sonix-people-head .sonix-label { margin-bottom: 0; }
+
+#sonix-panel .sonix-count {
+  font-size: 11px;
+  color: var(--ink-3);
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+}
+
+#sonix-panel .sonix-plist {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 208px;
+  overflow-y: auto;
+}
+
+#sonix-panel .sonix-person {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 8px;
+  border-radius: 11px;
+  border: 1px solid transparent;
+  cursor: pointer;
+  transition: background .14s, border-color .14s;
+}
+
+#sonix-panel .sonix-person:hover { background: rgba(255, 255, 255, .055); }
+
+#sonix-panel .sonix-person.on {
+  background: rgba(124, 140, 255, .13);
+  border-color: rgba(124, 140, 255, .42);
+}
+
+#sonix-panel .sonix-person:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+#sonix-panel .sonix-av {
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  flex: none;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: linear-gradient(135deg, rgba(124, 140, 255, .32), rgba(34, 211, 238, .22));
+  color: var(--ink);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: .02em;
+  border: 1px solid var(--edge);
+  transition: box-shadow .2s ease;
+}
+
+#sonix-panel .sonix-av img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+/* Meet says this person currently has the floor. */
+#sonix-panel .sonix-av.talking {
+  box-shadow: 0 0 0 2px var(--accent-2), 0 0 14px -2px rgba(34, 211, 238, .8);
+}
+
+#sonix-panel .sonix-who { min-width: 0; flex: 1; }
+
+#sonix-panel .sonix-pname {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--ink);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+#sonix-panel .sonix-psub {
+  font-size: 10.5px;
+  color: var(--ink-3);
+  margin-top: 2px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-variant-numeric: tabular-nums;
+}
+
+#sonix-panel .sonix-psub.green { color: var(--good); }
+#sonix-panel .sonix-psub.amber { color: var(--warn); }
+#sonix-panel .sonix-psub.red { color: var(--crit); }
+
+#sonix-panel .sonix-pip {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex: none;
+  background: rgba(255, 255, 255, .16);
+}
+
+#sonix-panel .sonix-pip.green { background: var(--good); }
+#sonix-panel .sonix-pip.amber { background: var(--warn); }
+#sonix-panel .sonix-pip.red { background: var(--crit); }
+#sonix-panel .sonix-pip.live { box-shadow: 0 0 0 3px rgba(34, 211, 238, .2); }
+
+/* The honesty line: what the per-person numbers do and do not mean. */
+#sonix-panel .sonix-pnote {
+  font-size: 10px;
+  line-height: 1.45;
+  color: var(--ink-3);
+  margin-top: 9px;
+  padding-top: 8px;
+  border-top: 1px solid var(--edge);
+}
+
+#sonix-panel .sonix-pnote.warn { color: var(--warn); }
 
 /* --- graph ------------------------------------------------------------- */
 #sonix-panel .sonix-chartwrap {
