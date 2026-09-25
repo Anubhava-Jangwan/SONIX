@@ -164,7 +164,7 @@ def read_meta(d: Path, dim: int):
         f"       root and re-run it.")
 
 
-def load_root(root: str, split: str, layer=None):
+def load_root(root: str, split: str, layer=None, dtype=np.float32):
     """One embedding root/split -> (X float32, y int64, filenames, meta).
 
     Keeps the shard/sidecar contract of the v1 loader: shard k covers manifest
@@ -209,7 +209,7 @@ def load_root(root: str, split: str, layer=None):
         X = X[:, i * P:(i + 1) * P]
         meta = {**meta, "layers": [key], "total_dim": P, "_sliced_from": labels}
 
-    X = X.astype(np.float32)
+    X = X.astype(dtype, copy=False)
     if not np.isfinite(X).all():
         n_bad = int((~np.isfinite(X)).any(1).sum())
         sys.exit(f"FATAL: {d} has {n_bad} rows containing NaN/inf. This is the "
@@ -330,7 +330,7 @@ def norm_lang(raw, where=""):
 
 
 # filename tokens that name a corpus or a copy, never a language
-NAME_PREFIXES = {"aug", "indicsynth", "mlaad", "mms", "tts"}
+NAME_PREFIXES = {"aug", "indicsynth", "mlaad", "mms", "tts", "cv"}
 
 
 def lang_from_name(stem, where):
@@ -404,6 +404,18 @@ def load_lang_table(paths):
     return out
 
 
+def parse_drop_langs(specs):
+    """["embeddings_v2_indicsynth=ml,ur,or", ...] -> {folder_name: {codes}}."""
+    out = {}
+    for sp in specs or []:
+        if "=" not in sp:
+            sys.exit(f"FATAL: --drop-langs {sp!r} must be ROOT_FOLDER=lang,lang")
+        root, langs = sp.split("=", 1)
+        codes = {norm_lang(l, f"--drop-langs {sp}") for l in langs.split(",") if l.strip()}
+        out.setdefault(Path(root.strip()).name.lower(), set()).update(codes)
+    return out
+
+
 def load_durations(paths):
     """--durations CSV(s) -> {stem: seconds}. A stem listed twice with different
     durations (LibriSeVoc vocoders) maps to None = unmeasured, never to a pick."""
@@ -447,6 +459,9 @@ DERIVE_RULES = (
     ("indicvoices", "indicvoices", "from_table", "bonafide",    "speaker_or_chunk"),
     ("mms_tts",     "mms_tts",     "from_name",  "mms_tts",     "stem"),
     ("mlaad",       "mlaad",       "from_name",  "mlaad",       "stem"),
+    # Common Voice: real, MP3 at source. Language + speaker (client_id) come
+    # from cv_manifest.csv via --lang-table, so its dev carve is speaker-disjoint.
+    ("commonvoice", "commonvoice", "from_table", "bonafide",    "speaker_or_chunk"),
     ("librisevoc",  "librisevoc",  "en",         "from_root",   "strip_gen"),
     ("",            "asvspoof19",  "en",         "from_attack", "stem"),
 )
@@ -468,7 +483,7 @@ def _librisevoc_family(root):
     one per vocoder for exactly this reason; files are never renamed."""
     name = Path(root).resolve().name.lower()
     tail = name.split("librisevoc", 1)[1].strip("_- ")
-    tail = re.sub(r"[_-](cond|g711|rawboost|rirmusan|aug|codec)([_-].*)?$", "", tail)
+    tail = re.sub(r"[_-](cond|mp3|g711|rawboost|rirmusan|aug|codec)([_-].*)?$", "", tail)
     if not tail:
         sys.exit(f"FATAL: {root}: a LibriSeVoc root must be named "
                  f"..._librisevoc_<vocoder> or ..._librisevoc_gt, one root per "
@@ -517,7 +532,7 @@ def derive_group(root, stem, rule, attack_of, lang_table=None):
     # recording ids on purpose, so a clip and its conditioned copies land on the
     # same side of the dev carve. channel is what distinguishes them.
     channel = "clean"
-    for tag in ("cond", "g711", "rawboost", "rirmusan", "aug", "codec"):
+    for tag in ("cond", "mp3", "g711", "rawboost", "rirmusan", "aug", "codec"):
         if tag in Path(root).resolve().name:
             channel = tag
             break
@@ -1045,6 +1060,40 @@ def summarise(cells):
     return max(vals), float(np.mean(vals)), len(vals)
 
 
+
+# ---------------------------------------------------------------------------
+# float16 training matrix (259k x 6,144 does not fit a laptop as float32)
+# ---------------------------------------------------------------------------
+STD_CHUNK = 8192
+DEV_CHUNK = 8192
+FP16_CLIP = 1e4
+
+
+def chunked_mean_std(X, chunk=STD_CHUNK):
+    """Column mean / std of a float16 matrix, accumulated in float64."""
+    s = np.zeros(X.shape[1], np.float64)
+    ss = np.zeros(X.shape[1], np.float64)
+    for i in range(0, len(X), chunk):
+        b = X[i:i + chunk].astype(np.float64)
+        s += b.sum(0)
+        ss += (b * b).sum(0)
+    n = len(X)
+    mu = s / n
+    var = np.maximum(ss / n - mu * mu, 0.0)
+    return mu.astype(np.float32), (np.sqrt(var) + 1e-6).astype(np.float32)
+
+
+def standardize_inplace(X, mu, sd, chunk=STD_CHUNK):
+    """X <- (X - mu) / sd in place, chunk by chunk. Returns #values clipped."""
+    n_clip = 0
+    for i in range(0, len(X), chunk):
+        b = (X[i:i + chunk].astype(np.float32) - mu) / sd
+        n_clip += int((np.abs(b) > FP16_CLIP).sum())
+        np.clip(b, -FP16_CLIP, FP16_CLIP, out=b)
+        X[i:i + chunk] = b
+    return n_clip
+
+
 # ===========================================================================
 # CLI
 # ===========================================================================
@@ -1090,6 +1139,12 @@ def build_argparser():
                          "are zero-padded, and IndicVoices is 36%% short against "
                          "~0%% for IndicSynth, so padding alone would read as "
                          "'real'. Unmeasured rows are kept and counted.")
+    ap.add_argument("--drop-langs", default=None, action="append",
+                    metavar="ROOT=LANG,LANG",
+                    help="REPEATABLE. Remove these languages from ONE root, named "
+                         "by its folder name exactly. Used where a language's "
+                         "fakes are replaced by an MP3-matched copy, e.g. "
+                         "embeddings_v2_indicsynth=ml,ur,or")
     ap.add_argument("--allow-asymmetric-channels", action="store_true",
                     help="ablations only: skip the S3 check that conditioned "
                          "rows are shared alike by bonafide and spoof")
@@ -1154,6 +1209,7 @@ def main(argv=None) -> int:
     manifest = load_manifest(args.manifest) if args.manifest else None
     attack_of = load_attack_ids(args.data_root) if args.derive_groups else {}
     lang_table = load_lang_table(args.lang_table)
+    drop_langs = parse_drop_langs(args.drop_langs)
     durations = load_durations(args.durations)
     if args.derive_groups:
         print("  --derive-groups: inferring metadata from folder and file names.\n"
@@ -1168,9 +1224,18 @@ def main(argv=None) -> int:
     print(f"\nloading {len(roots)} root(s):")
     Xs, ys, gm, prov, dur_log = [], [], [], [], []
     for r in roots:
-        X, y, files, meta = load_root(r, "train", args.layer)
+        X, y, files, meta = load_root(r, "train", args.layer,
+                                      dtype=np.float16)
         rows = attach_groups(files, y, r, manifest, args.derive_groups,
                              attack_of, strict=True, lang_table=lang_table)
+        drop = drop_langs.get(Path(r).resolve().name.lower())
+        if drop:
+            keep = np.array([g["language"] not in drop for g in rows])
+            print(f"    --drop-langs: {int((~keep).sum())} rows of "
+                  f"{','.join(sorted(drop))} removed from {Path(r).name}")
+            X, y = X[keep], y[keep]
+            files = [f for f, k in zip(files, keep) if k]
+            rows = [g for g, k in zip(rows, keep) if k]
         n_in = len(X)
         dur_stats = None
         if durations:
@@ -1220,6 +1285,8 @@ def main(argv=None) -> int:
 
     X = np.concatenate(Xs, 0)
     y = np.concatenate(ys, 0)
+    print(f"  matrix: {X.shape[0]} x {X.shape[1]} {X.dtype} = "
+          f"{X.nbytes / 1e9:.2f} GB")
     recordings = [d["recording_id"] for d in gm]
     check_channel_symmetry(gm, y, args.allow_asymmetric_channels)
     del Xs, ys
@@ -1273,15 +1340,18 @@ def main(argv=None) -> int:
         mu = np.zeros(Xtr.shape[1], np.float32)
         sd = np.ones(Xtr.shape[1], np.float32)
     else:
-        mu, sd = Xtr.mean(0), Xtr.std(0) + 1e-6
-    Xtr = (Xtr - mu) / sd
-    Xdv = (Xdv - mu) / sd
+        mu, sd = chunked_mean_std(Xtr)
+    n_clip = standardize_inplace(Xtr, mu, sd)
+    n_clip += standardize_inplace(Xdv, mu, sd)
+    if n_clip:
+        print(f"  NOTE: {n_clip} standardised values clipped to "
+              f"+/-{FP16_CLIP:g} to fit float16")
 
-    Xtr_t = torch.from_numpy(Xtr).float()
+    Xtr_t = torch.from_numpy(Xtr)          # float16, cast per batch
     ytr_t = torch.from_numpy(ytr).float()
     wtr_t = torch.from_numpy(w_tr).float()
     ftr_t = torch.from_numpy(fam_tr)
-    Xdv_t = torch.from_numpy(Xdv).float().to(device)
+    Xdv_t = torch.from_numpy(Xdv)          # float16, scored in chunks
 
     model = build_model(Xtr.shape[1], args.hidden, args.dropout,
                         n_families, args.loss, args.feat_dim).to(device)
@@ -1303,7 +1373,7 @@ def main(argv=None) -> int:
         run_s = run_a = 0.0
         for i in range(0, n, args.batch):
             idx = perm[i:i + args.batch]
-            xb = Xtr_t[idx].to(device)
+            xb = Xtr_t[idx].to(device).float()
             yb = ytr_t[idx].to(device)
             wb = wtr_t[idx].to(device)
             opt.zero_grad()
@@ -1322,9 +1392,12 @@ def main(argv=None) -> int:
 
         model.eval()
         with torch.no_grad():
-            sp, _ = model(Xdv_t)
-            dev_scores = (oc.score(sp) if oc is not None
-                          else sp.squeeze(1)).cpu().numpy()
+            parts = []
+            for j in range(0, len(Xdv_t), DEV_CHUNK):
+                sp, _ = model(Xdv_t[j:j + DEV_CHUNK].to(device).float())
+                parts.append((oc.score(sp) if oc is not None
+                              else sp.squeeze(1)).cpu())
+            dev_scores = torch.cat(parts).numpy()
         cells = eval_cells(order, gdv, ydv, dev_scores, args.min_bona)
         worst, mean, n_valid = summarise(cells)
         print(f"epoch {epoch:2d}/{args.epochs}  spoof={run_s / n:.4f}  "
@@ -1426,6 +1499,7 @@ def main(argv=None) -> int:
                        "group_source": "manifest" if manifest else "derived",
                        "manifest": args.manifest,
                        "lang_table": args.lang_table,
+                       "drop_langs": args.drop_langs,
                        "durations": args.durations, "min_dur": args.min_dur,
                        "dev_frac": args.dev_frac, "dev_seed": args.dev_seed,
                        "argv": sys.argv[1:]},

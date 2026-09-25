@@ -96,7 +96,9 @@ def main(argv=None) -> int:
 
     device = args.device or ("cuda" if torch.cuda.is_available() else "cpu")
     model = build_head(ckpt["config"]).to(device).eval()
-    model.load_state_dict(ckpt["state_dict"])
+    # v4 checkpoints keep the multitask head under state_dict and the
+    # serving-shaped Linear-ReLU-Dropout-Linear copy under legacy_state_dict
+    model.load_state_dict(ckpt.get("legacy_state_dict", ckpt["state_dict"]))
     mu = np.array(ckpt["mu"], np.float32)
     sd = np.array(ckpt["sd"], np.float32)
     sd[sd == 0] = 1.0            # a constant feature would otherwise give inf/nan
