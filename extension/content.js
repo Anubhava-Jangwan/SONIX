@@ -59,11 +59,120 @@ let orb = null;             // voice activity
 let lastModels = "";
 let lastState = null;
 
+/* ------------------------------------------------------------------ */
+/* Participants, and who is actually speaking                          */
+/* ------------------------------------------------------------------ */
+
+/* WHAT THIS CAN AND CANNOT DO.
+ *
+ * Tab capture gives us ONE mixed stream: every participant summed together.
+ * SONIX does no diarisation, so a score belongs to a 4-second window, not to
+ * a person. Printing a verdict beside a name on that basis would be inventing
+ * a result.
+ *
+ * What is real is Meet's own active-speaker signal. When Meet says exactly one
+ * participant is speaking, the audio in that window is that participant's
+ * voice, and the score can be attributed to them honestly. When two or more
+ * are speaking, or when we cannot read the signal at all, the window is
+ * recorded as unattributed and shown that way.
+ *
+ * Meet's DOM is not a public API and its class names change without notice, so
+ * every selector below is a guess with fallbacks, and failure is reported in
+ * the UI rather than silently producing a confident-looking wrong answer.
+ */
+
+const participants = new Map();   // id -> {id, name, speaking, scores:[], last}
+let selectedId = null;            // the target the operator picked
+let domReadable = false;          // did we find any participant tiles at all?
+let speakerReadable = false;      // could we read a speaking indicator?
+
+function readParticipants() {
+  const tiles = document.querySelectorAll("[data-participant-id]");
+  if (!tiles.length) {
+    domReadable = false;
+    return;
+  }
+  domReadable = true;
+
+  const seen = new Set();
+  let sawSpeakingAttr = false;
+
+  for (const tile of tiles) {
+    const id = tile.getAttribute("data-participant-id");
+    if (!id) continue;
+    seen.add(id);
+
+    // Name: Meet puts it in a few different places depending on layout.
+    let name = "";
+    const nameEl =
+      tile.querySelector("[data-self-name]") ||
+      tile.querySelector(".zWGUib") ||
+      tile.querySelector("[data-tooltip]");
+    if (nameEl) {
+      name = (nameEl.getAttribute("data-self-name") ||
+              nameEl.textContent || "").trim();
+    }
+    if (!name) name = (tile.getAttribute("data-tooltip") || "").trim();
+    if (!name) name = tile.textContent.trim().split("\n")[0] || "Participant";
+    name = name.slice(0, 40);
+
+    // Speaking: Meet marks the tile while a participant has the floor. Several
+    // candidate signals, because none of them is guaranteed to survive a
+    // Meet update.
+    let speaking = false;
+    const sig =
+      tile.querySelector(".IisKdb") ||          // animated speaking bars
+      tile.querySelector("[class*='speaking']") ||
+      tile.querySelector("[data-is-speaking]");
+    if (sig) {
+      sawSpeakingAttr = true;
+      const attr = sig.getAttribute("data-is-speaking");
+      speaking = attr !== null
+        ? attr !== "false"
+        : !!(sig.offsetParent !== null && sig.getClientRects().length);
+    }
+
+    const avatar = tile.querySelector("img");
+    const prev = participants.get(id) || { scores: [], last: null };
+    participants.set(id, {
+      id, name, speaking,
+      avatar: avatar ? avatar.src : null,
+      scores: prev.scores,
+      last: prev.last,
+    });
+  }
+
+  speakerReadable = sawSpeakingAttr;
+  for (const id of [...participants.keys()]) {
+    if (!seen.has(id)) participants.delete(id);
+  }
+  if (selectedId && !participants.has(selectedId)) selectedId = null;
+}
+
+/* The single speaker to credit this window to, or null when the answer is
+   genuinely ambiguous. Silence about who spoke is better than a guess. */
+function soleSpeaker() {
+  if (!speakerReadable) return null;
+  const talking = [...participants.values()].filter((p) => p.speaking);
+  return talking.length === 1 ? talking[0] : null;
+}
+
+/* Called once per scored window. Only credits a participant when Meet says
+   exactly one person had the floor. */
+function attribute(score) {
+  const who = soleSpeaker();
+  if (!who) return;
+  who.scores.push(score);
+  if (who.scores.length > 40) who.scores.shift();
+  who.last = score;
+}
+
 /* Level state, eased every frame so 20 Hz input looks continuous. */
 let targetLevel = 0;
 let orbLevel = 0;
 let lastLevelAt = 0;
 let rafId = null;
+let peopleTimer = null;
 
 /* ------------------------------------------------------------------ */
 /* Band / verdict                                                      */
@@ -141,6 +250,17 @@ function ensurePanel() {
   vstat.append(el("span", "sonix-vdot"), el("span", "sonix-vtext", "no audio"));
   voice.append(orb, vstat);
 
+  // --- participants ---
+  const people = el("div", "sonix-people sonix-hide-collapsed");
+  const phead = el("div", "sonix-people-head");
+  phead.append(el("div", "sonix-label", "In this call"),
+               el("span", "sonix-count", "—"));
+  const plist = el("div", "sonix-plist");
+  plist.id = "sonix-plist";
+  const pnote = el("div", "sonix-pnote");
+  pnote.id = "sonix-pnote";
+  people.append(phead, plist, pnote);
+
   const chartwrap = el("div", "sonix-chartwrap sonix-hide-collapsed");
   canvas = el("canvas");
   chartwrap.appendChild(canvas);
@@ -185,10 +305,21 @@ function ensurePanel() {
   const meta = el("div", "sonix-meta sonix-hide-collapsed");
   meta.id = "sonix-meta";
 
-  panel.append(head, verdict, voice, chartwrap, th, ctrl, btns, err, meta);
+  panel.append(head, verdict, voice, people, chartwrap, th, ctrl, btns, err, meta);
   document.body.appendChild(panel);
 
   startOrb();
+
+  // Participants join, leave and take the floor between scored windows, which
+  // arrive only every half second at best and not at all during silence. This
+  // keeps the roster and the speaking pips honest in between.
+  clearInterval(peopleTimer);
+  peopleTimer = setInterval(() => {
+    if (!panel || panel.classList.contains("sonix-collapsed")) return;
+    readParticipants();
+    renderPeople();
+  }, 1000);
+
   return panel;
 }
 
@@ -223,6 +354,11 @@ function makeSlider(key, label, get, set) {
 function removePanel() {
   if (rafId) cancelAnimationFrame(rafId);
   rafId = null;
+  clearInterval(peopleTimer);
+  peopleTimer = null;
+  participants.clear();
+  selectedId = null;
+  prevScoreCount = 0;
   if (panel && panel.parentNode) panel.parentNode.removeChild(panel);
   panel = null;
   canvas = null;
@@ -370,21 +506,39 @@ function drawChart(scores) {
   const x = (i) => (i / (MAX_POINTS - 1)) * w;
   const line = COLOUR[bandOf(scores[scores.length - 1])] || COLOUR.idle;
 
+  /* Smooth curve through the points, drawn as quadratic segments between
+     midpoints. A polyline through per-window scores is visually noisy and
+     invites reading each vertex as an event; the eye should follow the trend,
+     and the exact values are on the axis. */
+  const curve = () => {
+    ctx.moveTo(x(0), y(scores[0]));
+    if (scores.length < 3) {
+      for (let i = 1; i < scores.length; i++) ctx.lineTo(x(i), y(scores[i]));
+      return;
+    }
+    for (let i = 1; i < scores.length - 1; i++) {
+      const mx = (x(i) + x(i + 1)) / 2;
+      const my = (y(scores[i]) + y(scores[i + 1])) / 2;
+      ctx.quadraticCurveTo(x(i), y(scores[i]), mx, my);
+    }
+    const n2 = scores.length - 1;
+    ctx.quadraticCurveTo(x(n2), y(scores[n2]), x(n2), y(scores[n2]));
+  };
+
   ctx.beginPath();
-  ctx.moveTo(x(0), y(scores[0]));
-  for (let i = 1; i < scores.length; i++) ctx.lineTo(x(i), y(scores[i]));
+  curve();
   ctx.lineTo(x(scores.length - 1), h);
   ctx.lineTo(x(0), h);
   ctx.closePath();
   const grad = ctx.createLinearGradient(0, 0, 0, h);
-  grad.addColorStop(0, line + "4D");
-  grad.addColorStop(1, line + "05");
+  grad.addColorStop(0, line + "59");
+  grad.addColorStop(0.55, line + "1F");
+  grad.addColorStop(1, line + "00");
   ctx.fillStyle = grad;
   ctx.fill();
 
   ctx.beginPath();
-  ctx.moveTo(x(0), y(scores[0]));
-  for (let i = 1; i < scores.length; i++) ctx.lineTo(x(i), y(scores[i]));
+  curve();
   ctx.strokeStyle = line;
   ctx.lineWidth = 2.25;
   ctx.lineJoin = "round";
@@ -438,11 +592,120 @@ function syncModels(state) {
   }
 }
 
+function initials(name) {
+  return name.split(/\s+/).filter(Boolean).slice(0, 2)
+             .map((w) => w[0].toUpperCase()).join("") || "?";
+}
+
+function renderPeople() {
+  const list = panel.querySelector("#sonix-plist");
+  const note = panel.querySelector("#sonix-pnote");
+  const count = panel.querySelector(".sonix-count");
+  if (!list) return;
+
+  const people = [...participants.values()];
+  count.textContent = people.length ? `${people.length}` : "—";
+
+  list.textContent = "";
+
+  if (!domReadable) {
+    note.textContent =
+      "Can't read Meet's participant list on this layout — scores below are " +
+      "for the whole call.";
+    note.className = "sonix-pnote warn";
+    return;
+  }
+
+  for (const p of people) {
+    const row = el("div", "sonix-person" + (p.id === selectedId ? " on" : ""));
+    row.tabIndex = 0;
+    row.title = "Focus the verdict on this participant";
+
+    const av = el("div", "sonix-av");
+    if (p.avatar) {
+      const img = document.createElement("img");
+      img.src = p.avatar;
+      img.alt = "";
+      av.appendChild(img);
+    } else {
+      av.textContent = initials(p.name);
+    }
+    if (p.speaking) av.classList.add("talking");
+
+    const who = el("div", "sonix-who");
+    who.append(el("div", "sonix-pname", p.name));
+
+    // Per-person reading, only from windows Meet attributed to them alone.
+    let sub, tone = "idle";
+    if (p.last === null || p.last === undefined) {
+      sub = p.speaking ? "speaking — listening" : "no attributed audio yet";
+    } else {
+      tone = bandOf(p.last);
+      const label = tone === "red" ? "Cloned"
+                  : tone === "amber" ? "Uncertain" : "Authentic";
+      sub = `${label} · ${(p.last * 100).toFixed(0)}% · ${p.scores.length} win`;
+    }
+    const subEl = el("div", `sonix-psub ${tone}`, sub);
+    who.appendChild(subEl);
+
+    const pip = el("span", `sonix-pip ${tone}` + (p.speaking ? " live" : ""));
+
+    row.append(av, who, pip);
+    const pick = () => {
+      selectedId = selectedId === p.id ? null : p.id;
+      renderPeople();
+      if (lastState) draw(lastState);
+    };
+    row.addEventListener("click", pick);
+    row.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" || e.key === " ") { e.preventDefault(); pick(); }
+    });
+    list.appendChild(row);
+  }
+
+  if (!people.length) {
+    note.textContent = "No participant tiles visible yet.";
+    note.className = "sonix-pnote";
+  } else if (!speakerReadable) {
+    note.textContent =
+      "Meet's speaking indicator isn't readable here, so windows can't be " +
+      "attributed to a person. The verdict above is for the whole call.";
+    note.className = "sonix-pnote warn";
+  } else {
+    note.textContent =
+      "Attributed by Meet's active-speaker signal, only while one person " +
+      "has the floor. Not voice biometrics.";
+    note.className = "sonix-pnote";
+  }
+}
+
+let prevScoreCount = 0;
+
 function draw(s) {
   if (!s || !panel) return;
   lastState = s;
 
-  const [wordText, colour, subText] = verdictOf(s.lastScore, s.scoringAvailable);
+  readParticipants();
+
+  // Credit any windows that arrived since the last render. The state carries
+  // the whole history, so new points are whatever is past the high-water mark;
+  // a shorter list means the call was restarted, so attribution starts over.
+  const sc = s.scores || [];
+  if (sc.length < prevScoreCount) {
+    prevScoreCount = 0;
+    for (const p of participants.values()) { p.scores = []; p.last = null; }
+  }
+  for (let i = prevScoreCount; i < sc.length; i++) attribute(sc[i]);
+  prevScoreCount = sc.length;
+
+  // A selected participant retargets the verdict onto the windows Meet
+  // attributed to them. With nobody selected it stays the whole-call reading.
+  const target = selectedId ? participants.get(selectedId) : null;
+  const shown = target && target.last !== null && target.last !== undefined
+    ? target.last
+    : s.lastScore;
+
+  const [wordText, colour, subText] = verdictOf(shown, s.scoringAvailable);
 
   const dot = panel.querySelector(".sonix-dot");
   dot.style.background = colour;
@@ -470,13 +733,21 @@ function draw(s) {
     word.textContent = wordText;
     word.style.color = colour;
     pct.textContent =
-      s.lastScore === null || s.lastScore === undefined
+      shown === null || shown === undefined
         ? ""
-        : `P(AI voice) ${(s.lastScore * 100).toFixed(0)}%`;
-    sub.textContent = subText;
+        : `P(AI voice) ${(shown * 100).toFixed(0)}%`;
+    // Always says whose reading this is, so a per-person verdict can never be
+    // mistaken for the whole call or the other way round.
+    sub.textContent = target
+      ? `${target.name} — ${target.scores.length} attributed window` +
+        `${target.scores.length === 1 ? "" : "s"}. ${subText}`
+      : subText;
   }
 
-  drawChart(s.scores || []);
+  // The graph stays the whole-call series when nothing is selected, and
+  // switches to the target's attributed windows when something is.
+  drawChart(target ? target.scores : (s.scores || []));
+  renderPeople();
   syncModels(s);
 
   const err = panel.querySelector("#sonix-err");
