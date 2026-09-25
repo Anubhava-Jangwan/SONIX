@@ -468,6 +468,7 @@ def _librisevoc_family(root):
     one per vocoder for exactly this reason; files are never renamed."""
     name = Path(root).resolve().name.lower()
     tail = name.split("librisevoc", 1)[1].strip("_- ")
+    tail = re.sub(r"[_-](cond|g711|rawboost|rirmusan|aug|codec)([_-].*)?$", "", tail)
     if not tail:
         sys.exit(f"FATAL: {root}: a LibriSeVoc root must be named "
                  f"..._librisevoc_<vocoder> or ..._librisevoc_gt, one root per "
@@ -516,7 +517,7 @@ def derive_group(root, stem, rule, attack_of, lang_table=None):
     # recording ids on purpose, so a clip and its conditioned copies land on the
     # same side of the dev carve. channel is what distinguishes them.
     channel = "clean"
-    for tag in ("g711", "rawboost", "rirmusan", "aug", "codec"):
+    for tag in ("cond", "g711", "rawboost", "rirmusan", "aug", "codec"):
         if tag in Path(root).resolve().name:
             channel = tag
             break
@@ -684,6 +685,41 @@ def report_durations(log, min_dur):
               f"kept as they are.")
     if min_dur is None:
         print("  (report only -- pass --min-dur 4.0 to drop the short rows)")
+
+
+def check_channel_symmetry(rows, y, allow, tol=0.05):
+    """Brief S3 exit rule: conditioning must be distributed alike across classes.
+
+    Every earlier augmentation here was one-sided -- g711/rawboost/rirmusan on
+    ASVspoof only, "aug" on fakes only -- and the model learned the effect as a
+    label. So: the share of conditioned rows must match between bonafide and
+    spoof overall AND inside every language that has both. make_conditioned.py
+    on every training folder satisfies this by construction; a stray one-sided
+    root (e.g. embeddings_v2_mms_tts_aug) does not, and stops the run here.
+    """
+    y = np.asarray(y)
+    cond = np.array([r["channel"] != "clean" for r in rows])
+    langs = np.array([r["language"] for r in rows])
+    scopes = [("all languages", np.ones(len(y), bool))]
+    scopes += [(f"language {l}", langs == l) for l in sorted(set(langs))]
+    bad = []
+    print("\n  conditioned share (S3 symmetry):")
+    for name, m in scopes:
+        b, s = m & (y == 0), m & (y == 1)
+        if not b.any() or not s.any():
+            continue
+        cb, cs = cond[b].mean(), cond[s].mean()
+        flag = "" if abs(cb - cs) <= tol else "  <- ASYMMETRIC"
+        print(f"    {name:<16} bona {cb:6.1%}   spoof {cs:6.1%}{flag}")
+        if flag:
+            bad.append(name)
+    if bad and not allow:
+        sys.exit(f"FATAL: conditioning is one-sided in {', '.join(bad)} (tolerance "
+                 f"{tol:.0%}). The model would learn the effect as a label.\n"
+                 f"       Condition EVERY training folder with make_conditioned.py, "
+                 f"or drop the\n       one-sided roots (the old *_aug / g711 / "
+                 f"rawboost / rirmusan ones).\n       "
+                 f"--allow-asymmetric-channels overrides, for ablations only.")
 
 
 # ===========================================================================
@@ -1054,6 +1090,9 @@ def build_argparser():
                          "are zero-padded, and IndicVoices is 36%% short against "
                          "~0%% for IndicSynth, so padding alone would read as "
                          "'real'. Unmeasured rows are kept and counted.")
+    ap.add_argument("--allow-asymmetric-channels", action="store_true",
+                    help="ablations only: skip the S3 check that conditioned "
+                         "rows are shared alike by bonafide and spoof")
     ap.add_argument("--data-root", default="data/asvspoof19_la",
                     help="for the CM protocols, which give ASVspoof its "
                          "generator family (the attack id) under --derive-groups")
@@ -1151,6 +1190,26 @@ def main(argv=None) -> int:
     if dur_log:
         report_durations(dur_log, args.min_dur)
 
+    # one pad mode across every root -- a zero-padded root next to a
+    # repeat-padded one turns "has a silent tail" into a corpus label
+    pads = {}
+    for pr in prov:
+        m = pr["meta"]
+        pads[pr["root"]] = m.get("pad", "zero")
+        if (Path(pr["root"]) / "train" / "repad_progress.txt").exists() and \
+                m.get("pad") != "repeat":
+            sys.exit(f"FATAL: {pr['root']} is HALF converted by repad_short.py "
+                     f"(repad_progress.txt present, meta not yet pad=repeat). "
+                     f"Finish the repad run first.")
+    if len(set(pads.values())) > 1:
+        sys.exit("FATAL: roots disagree on how short clips were padded:\n" +
+                 "\n".join(f"       {v:7s} {k}" for k, v in sorted(pads.items())) +
+                 "\n       Run repad_short.py on the zero-padded roots.")
+    if "zero" in pads.values():
+        print("  WARNING: roots are ZERO-padded. Clips under 4 s carry a silent "
+              "tail that marks the corpus;\n  v4 trains on repeat-padded roots "
+              "(repad_short.py).")
+
     dims = {x.shape[1] for x in Xs}
     if len(dims) > 1:
         sys.exit(f"FATAL: roots disagree on dimensionality: {sorted(dims)}.\n"
@@ -1162,6 +1221,7 @@ def main(argv=None) -> int:
     X = np.concatenate(Xs, 0)
     y = np.concatenate(ys, 0)
     recordings = [d["recording_id"] for d in gm]
+    check_channel_symmetry(gm, y, args.allow_asymmetric_channels)
     del Xs, ys
 
     # ---- groups, then the recording-level carve --------------------------

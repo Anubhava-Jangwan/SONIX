@@ -50,6 +50,16 @@ TARGET_SR = 16000
 TARGET_LEN = 64000          # exactly 4.0 seconds at 16 kHz
 EMB_DIM = 1024
 
+# How a clip shorter than 4.0 s is brought up to TARGET_LEN.
+#   repeat (default since v4): tile the clip until it fills the window. This is
+#          what the live server and diagnose_pairs.py already do, and a live
+#          call never contains a digital-silence tail.
+#   zero:  the pre-v4 behaviour -- append digital silence. Kept ONLY so old
+#          roots can be reproduced. It is a shortcut: 71% of ASVspoof19 and
+#          61% of In-the-Wild clips are under 4 s, against 3.8% of IndicSynth,
+#          so a silent tail says "which corpus" rather than "real or fake".
+PAD_MODE = "repeat"
+
 # --- ASVspoof 2019 LA layout ------------------------------------------------
 PROTOCOL_FILE = {
     "train": "ASVspoof2019.LA.cm.train.trn.txt",
@@ -153,8 +163,8 @@ def _build_manifest_itw(itw_root):
 # ===========================================================================
 # Audio loading  ->  exactly 64,000 samples, 16 kHz, mono, float32
 # ===========================================================================
-def load_audio_fixed(path: str) -> np.ndarray:
-    """Decode to exactly TARGET_LEN samples, 16 kHz mono float32.
+def load_audio_raw(path: str) -> np.ndarray:
+    """Decode the whole file to 16 kHz mono float32 (no crop, no pad).
 
     Tries ffmpeg first (tolerant of odd containers/codecs -- needed for some
     DF21 and In-the-Wild files), then falls back to soundfile. Previously a
@@ -184,8 +194,22 @@ def load_audio_fixed(path: str) -> np.ndarray:
             w = _resample(w, sr, TARGET_SR)
         wav = w
 
+    return np.ascontiguousarray(wav, dtype=np.float32)
+
+
+def load_audio_fixed(path: str) -> np.ndarray:
+    """Decode, then crop/fill to exactly TARGET_LEN (see fit_window)."""
+    return fit_window(load_audio_raw(path))
+
+
+def fit_window(wav, mode=None):
+    """Crop to the first TARGET_LEN samples, or fill a short clip per PAD_MODE."""
+    mode = mode or PAD_MODE
+    wav = np.asarray(wav, dtype=np.float32)
     if len(wav) >= TARGET_LEN:
         wav = wav[:TARGET_LEN]
+    elif mode == "repeat" and len(wav) > 0:
+        wav = np.tile(wav, int(np.ceil(TARGET_LEN / len(wav))))[:TARGET_LEN]
     else:
         wav = np.pad(wav, (0, TARGET_LEN - len(wav)))
     return np.ascontiguousarray(wav, dtype=np.float32)
@@ -331,6 +355,9 @@ def _apply_file_list(manifest, list_path):
 
 
 def run(args, _load_frontend=load_frontend, _embed_batch=embed_batch) -> int:
+    global PAD_MODE
+    PAD_MODE = getattr(args, "pad", None) or "repeat"
+    print(f"short clips: {PAD_MODE}-padded to {TARGET_LEN} samples", flush=True)
     # progress bar is optional -- degrade gracefully if tqdm is missing
     try:
         from tqdm import tqdm
@@ -367,6 +394,24 @@ def run(args, _load_frontend=load_frontend, _embed_batch=embed_batch) -> int:
     n_shards = (total + shard_size - 1) // shard_size
     print(f"[{split}] {total} files -> {n_shards} shards of up to {shard_size} "
           f"in {out_dir}")
+
+    # ---- a root is ONE pad mode, never a mix ------------------------------
+    # Resume skips finished shards, so re-running the repeat-pad extractor into
+    # a zero-padded root would silently mix both. The mode is pinned per root.
+    marker = out_dir / "pad_mode.txt"
+    have_shards = any(out_dir.glob("shard_*.npy"))
+    if marker.exists():
+        prev = marker.read_text().strip()
+    elif (out_dir / "meta.json").exists():
+        import json as _json
+        prev = _json.loads((out_dir / "meta.json").read_text()).get("pad", "zero")
+    else:
+        prev = "zero" if have_shards else None
+    if prev is not None and prev != PAD_MODE:
+        sys.exit(f"FATAL: {out_dir} was extracted with pad={prev}; this run is "
+                 f"pad={PAD_MODE}. Resuming would mix both in one root.\n"
+                 f"       Use repad_short.py to convert it in place, or a new --out.")
+    marker.write_text(PAD_MODE + "\n")
 
     # ---- figure out what's already done (resume) --------------------------
     todo_shards = []
@@ -549,6 +594,10 @@ def build_argparser():
                          "next shard while the GPU works (default 1 = sequential). "
                          "Output is identical for any value; 4-8 is typically "
                          "much faster, since decoding, not the GPU, is the bottleneck.")
+    ap.add_argument("--pad", default="repeat", choices=["repeat", "zero"],
+                    help="how clips under 4.0 s fill the window. repeat (default) "
+                         "tiles the clip, matching the live server; zero appends "
+                         "silence and exists only to reproduce pre-v4 roots.")
     return ap
 
 
