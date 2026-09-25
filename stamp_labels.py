@@ -84,8 +84,15 @@ def main() -> int:
 
         new = np.full(n, args.label, dtype=np.int8)
         if (not lab_p.exists()) or (not np.array_equal(np.load(lab_p), new)):
+            # np.save() APPENDS ".npy" to any path that does not already end
+            # in it, so np.save(Path(".../x.labels.npy.tmp"), ...) wrote
+            # x.labels.npy.tmp.npy and the rename below then failed with
+            # FileNotFoundError. Passing an open handle keeps the name we chose.
+            # This only ever fired when a label actually needed changing -- i.e.
+            # exactly when stamping spoof folders, the case the tool exists for.
             tmp = lab_p.with_suffix(".npy.tmp")
-            np.save(tmp, new)
+            with open(tmp, "wb") as fh:
+                np.save(fh, new)
             tmp.replace(lab_p)
             changed += 1
 

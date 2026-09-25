@@ -1,0 +1,46 @@
+# SONIX theme. Dark, because the subject is audio and the hero of the app is a
+# waveform -- a waveform on white is a diagram, on black it is the signal.
+#
+# Band colours measured against the surface they sit on (#14161F):
+#   GREEN #34D399 = 9.38:1   AMBER #FBBF24 = 10.80:1   RED #FB7185 = 6.70:1
+#   INK #F2F4F8 = 16.38:1    INK_2 #A8B0C2 = 8.29:1    INK_3 #7A8299 = 4.71:1
+#
+# realtime/live_ui.py shares this file and has its own dark CSS; it is close
+# enough in value that it still reads correctly.
+
+[theme]
+base = "dark"
+primaryColor = "#7C8CFF"
+backgroundColor = "#0A0B10"
+secondaryBackgroundColor = "#14161F"
+textColor = "#F2F4F8"
+linkColor = "#8E9BFF"
+borderColor = "#252938"
+codeBackgroundColor = "#14161F"
+codeTextColor = "#C8D0E4"
+
+greenColor = "#34D399"
+orangeColor = "#FBBF24"
+redColor = "#FB7185"
+blueColor = "#7C8CFF"
+grayColor = "#7A8299"
+
+chartCategoricalColors = ["#7C8CFF", "#22D3EE", "#34D399", "#FBBF24", "#FB7185", "#C084FC", "#7A8299"]
+
+font = "Inter:https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap"
+headingFont = "'Space Grotesk':https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&display=swap"
+codeFont = "'JetBrains Mono':https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500&display=swap"
+baseFontSize = 16
+headingFontSizes = ["46px", "30px", "21px", "17px", "15px", "13px"]
+headingFontWeights = [700, 600, 600, 600, 600, 600]
+linkUnderline = false
+baseRadius = "12px"
+buttonRadius = "10px"
+showWidgetBorder = true
+
+[client]
+toolbarMode = "minimal"
+showErrorDetails = true
+
+[server]
+runOnSave = true

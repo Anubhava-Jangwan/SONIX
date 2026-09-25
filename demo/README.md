@@ -1,3 +1,8 @@
+> **INTERNAL / DEBUG TOOL — not the tester-facing site.**
+> Testers use one URL only: **http://localhost:8000/** (served by
+> `python -m realtime.server`). This Streamlit app is kept for model-comparison
+> debugging; don't point testers at it.
+
 # SONIX — Suryansh UI v9
 
 ## What changed

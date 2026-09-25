@@ -1,0 +1,42 @@
+path,recording_id,corpus,language,generator_family,channel,label,split
+sonix_real/sonix_real/real/ashish chanchlani real.wav,ashish chanchlani real,sonix_real,unknown,bonafide,unknown,0,test
+sonix_real/sonix_real/real/bhuvan bam real.wav,bhuvan bam real,sonix_real,unknown,bonafide,unknown,0,test
+sonix_real/sonix_real/real/Dr. Manmohan Singh Address to the Nation (Hindi)_[cut_62sec].wav,dr. manmohan singh address to the nation (hindi)_[cut_62sec],sonix_real,unknown,bonafide,unknown,0,test
+sonix_real/sonix_real/real/I AM STILL ALIVE _ CHALO SANASAD_[cut_61sec].wav,i am still alive _ chalo sanasad_[cut_61sec],sonix_real,unknown,bonafide,unknown,0,test
+sonix_real/sonix_real/real/modi real.wav,modi real,sonix_real,unknown,bonafide,unknown,0,test
+sonix_real/sonix_real/real/nizamuddin real.wav,nizamuddin real,sonix_real,unknown,bonafide,unknown,0,test
+sonix_real/sonix_real/real/rahul gandhi real.wav,rahul gandhi real,sonix_real,unknown,bonafide,unknown,0,test
+sonix_real/sonix_real/real/rajat sood real.wav,rajat sood real,sonix_real,unknown,bonafide,unknown,0,test
+sonix_real/sonix_real/real/real_01.wav,real_01,sonix_real,unknown,bonafide,unknown,0,test
+sonix_real/sonix_real/real/real_02.wav,real_02,sonix_real,unknown,bonafide,unknown,0,test
+sonix_real/sonix_real/real/real_03.wav,real_03,sonix_real,unknown,bonafide,unknown,0,test
+sonix_real/sonix_real/real/real_04.wav,real_04,sonix_real,unknown,bonafide,unknown,0,test
+sonix_real/sonix_real/real/real_05.wav,real_05,sonix_real,unknown,bonafide,unknown,0,test
+sonix_real/sonix_real/real/real_06.wav,real_06,sonix_real,unknown,bonafide,unknown,0,test
+sonix_real/sonix_real/real/real_07.wav,real_07,sonix_real,unknown,bonafide,unknown,0,test
+sonix_real/sonix_real/real/real_08.wav,real_08,sonix_real,unknown,bonafide,unknown,0,test
+sonix_real/sonix_real/real/real_09.wav,real_09,sonix_real,unknown,bonafide,unknown,0,test
+sonix_real/sonix_real/real/real_10.wav,real_10,sonix_real,unknown,bonafide,unknown,0,test
+sonix_real/sonix_real/real/srk real cut.wav,srk real cut,sonix_real,unknown,bonafide,unknown,0,test
+sonix_real/sonix_real/real/tvk vijay speech.wav,tvk vijay speech,sonix_real,unknown,bonafide,unknown,0,test
+sonix_real/sonix_real/fake/ashish.wav,ashish,sonix_real,unknown,unknown,unknown,1,test
+sonix_real/sonix_real/fake/bhuvan.wav,bhuvan,sonix_real,unknown,unknown,unknown,1,test
+sonix_real/sonix_real/fake/fake_01.wav,fake_01,sonix_real,unknown,unknown,unknown,1,test
+sonix_real/sonix_real/fake/fake_02.wav,fake_02,sonix_real,unknown,unknown,unknown,1,test
+sonix_real/sonix_real/fake/fake_03.wav,fake_03,sonix_real,unknown,unknown,unknown,1,test
+sonix_real/sonix_real/fake/fake_04.wav,fake_04,sonix_real,unknown,unknown,unknown,1,test
+sonix_real/sonix_real/fake/fake_05.wav,fake_05,sonix_real,unknown,unknown,unknown,1,test
+sonix_real/sonix_real/fake/fake_06.wav,fake_06,sonix_real,unknown,unknown,unknown,1,test
+sonix_real/sonix_real/fake/fake_07.wav,fake_07,sonix_real,unknown,unknown,unknown,1,test
+sonix_real/sonix_real/fake/fake_08.wav,fake_08,sonix_real,unknown,unknown,unknown,1,test
+sonix_real/sonix_real/fake/fake_09.wav,fake_09,sonix_real,unknown,unknown,unknown,1,test
+sonix_real/sonix_real/fake/fake_10.wav,fake_10,sonix_real,unknown,unknown,unknown,1,test
+sonix_real/sonix_real/fake/manmohan.wav,manmohan,sonix_real,unknown,unknown,unknown,1,test
+sonix_real/sonix_real/fake/modi.wav,modi,sonix_real,unknown,unknown,unknown,1,test
+sonix_real/sonix_real/fake/nizzamudin.wav,nizzamudin,sonix_real,unknown,unknown,unknown,1,test
+sonix_real/sonix_real/fake/output.wav,output,sonix_real,unknown,unknown,unknown,1,test
+sonix_real/sonix_real/fake/rahul.wav,rahul,sonix_real,unknown,unknown,unknown,1,test
+sonix_real/sonix_real/fake/rajat sood.wav,rajat sood,sonix_real,unknown,unknown,unknown,1,test
+sonix_real/sonix_real/fake/sonam.wav,sonam,sonix_real,unknown,unknown,unknown,1,test
+sonix_real/sonix_real/fake/srk.wav,srk,sonix_real,unknown,unknown,unknown,1,test
+sonix_real/sonix_real/fake/tvk.wav,tvk,sonix_real,unknown,unknown,unknown,1,test

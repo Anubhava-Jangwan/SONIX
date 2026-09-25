@@ -1,0 +1,338 @@
+SONIX (SIH26104) - FEATURES AND CAPABILITIES
+Written 2026-09-01. Every claim was checked against the code or by running it
+on this machine. Where something does not work, it says so and names the file.
+
+Companion documents:
+  README.md            setup and full architecture
+  PROJECT_STATE.txt    merge state, blocking bugs, dataset damage
+  CLAUDE.md            environment gotchas and team lanes
+  docs/                per-lane handoff notes
+  docs/handoff/SONIX_REFERENCE.md
+                       section 10 is the PPT-promises-vs-built table:
+                       RawBoost in progress, OC-Softmax / AASIST / RawNet2
+                       planned. Those are stated NEXT STAGES, not failures -
+                       read it before answering a jury question about them.
+This file answers one question only: what can SONIX actually do?
+
+
+====================================================================
+1. THE ONE-LINE VERSION
+====================================================================
+SONIX listens to a phone or video call and warns you, live, that the voice
+on the other end may be an AI clone.
+
+It does not block the call, hang up, or decide anything. It raises a signal.
+A human decides what to do about it.
+
+
+====================================================================
+2. HOW IT DECIDES
+====================================================================
+    4-second audio window @ 16 kHz mono
+      -> frozen wav2vec2 XLS-R (300M params) front-end
+      -> 1024-dim embedding, mean-pooled over time
+      -> small trained MLP head (~300k params)
+      -> risk score in [0,1] = P(this voice is synthetic)
+
+Only the MLP head is trained. The wav2vec2 front-end is frozen and never
+fine-tuned - that is what keeps the trainable part small enough to run on a
+laptop GPU and fast enough to score a live call.
+
+Windows advance on a 0.5 s hop, so a new score arrives roughly twice a
+second once the first 4 s buffer has filled.
+
+The headline metric is EER (equal error rate), never accuracy. It is always
+reported as "X% on <split name>". A bare accuracy number means nothing here
+because the classes are heavily imbalanced.
+
+
+====================================================================
+3. THE RISK BAND
+====================================================================
+    Green    score < 35%      consistent with a real voice
+    Amber    35% - 65%        uncertain, treat with caution
+    Red      score >= 65%     likely synthetic, verify by another channel
+
+These thresholds are PROVISIONAL. They were chosen on the clean ASVspoof
+benchmark and have never been recalibrated on real recordings. Do not
+present them to a jury as tuned values.
+
+Defined once in realtime/live_ui.py (AMBER_AT, RED_AT) and mirrored in the
+microphone page; realtime/tests/test_miccapture.py fails if the two drift
+apart.
+
+
+====================================================================
+4. WHAT YOU CAN ACTUALLY DO WITH IT - FOUR ENTRY POINTS
+====================================================================
+
+--------------------------------------------------------------------
+4.1  OFFLINE PIPELINE - benchmark numbers
+--------------------------------------------------------------------
+Turn a dataset of audio files into embeddings, train the head, and produce
+the EER number that the whole project is judged on.
+
+    src/verify_protocol.py    dataset/protocol gate - run FIRST, must PASS
+    extract_embeddings.py     audio -> cached embedding shards (the slow step)
+    src/train.py              trains the MLP head -> head.pt
+    src/eval.py               produces THE number
+    make_codec.py             degrades audio through phone codecs (G.711 etc)
+                              to measure codec robustness
+
+Extraction is resumable and cached. It is the expensive step; never re-run
+it from scratch when a resumable rerun would pick up where it left off.
+
+--------------------------------------------------------------------
+4.2  STREAMLIT DEMO - score a file, watch it stream
+--------------------------------------------------------------------
+    demo/app.py           the UI
+    demo/windowing.py     splits a wav into overlapping windows
+    demo/risk.py          smoothing + hysteresis so the band does not flicker
+    demo/streaming.py     yields scores one at a time, like a live call
+    demo/score_file.py    the integration contract: score_file(wav) -> [float]
+
+Runs on localhost:8501. Mock streaming mode works today. Real mode needs
+head.pt and currently raises rather than degrading gracefully.
+
+--------------------------------------------------------------------
+4.3  LIVE DETECTION SERVER - realtime/
+--------------------------------------------------------------------
+    python -m realtime.server --ws-port 8000 --mode webrtc [--ckpt head.pt]
+
+An aiohttp server that accepts live audio, windows it, scores it, and
+broadcasts results to every connected client.
+
+  Endpoints
+    /ws                 WebSocket - audio in (binary int16 PCM), JSON out
+    /mic                browser microphone capture page (see below)
+    /api/status         server state, scoring_available flag, live telemetry
+    /api/telemetry      per-call window/score history
+    /api/approve        approve a pairing code
+    /api/end-call       end a call and write its audit record
+    /api/score-file     upload a file for scoring
+
+  Three input modes
+    --mode voip         AudioSocket TCP (Asterisk telephony), port 5000
+    --mode webrtc       browser audio: the /mic page and the Chrome extension
+    --mode upload       file upload only
+
+  Consent gate - this is a real mechanism, not a UI convention
+    Every call gets a 6-digit pairing code that an operator must approve in
+    the dashboard. Session.push_audio() at realtime/session.py:190 discards
+    every incoming chunk until the state reaches LISTENING. Refusals are
+    written to the audit trail. Codes expire after 120 seconds.
+
+  Silence gate (VAD)
+    realtime/vad.py scores rms, peak and speech_ratio per window and drops
+    windows that carry no speech, so silence cannot produce a verdict.
+
+  Audit trail
+    Every call writes outputs/calls/<call_id>.json - call metadata, the event
+    trail, and the per-window scores. The AUDIO IS NOT SAVED. It lives in a
+    4-second ring buffer and is overwritten continuously.
+
+  Dashboard: streamlit run realtime/live_ui.py
+    Live risk timeline with the Green/Amber/Red bands drawn behind it,
+    per-call telemetry, the audio-path view, pairing-code approval, and a
+    button that opens the microphone capture page.
+
+--------------------------------------------------------------------
+4.4  BROWSER CAPTURE - two ways in
+--------------------------------------------------------------------
+(a) Microphone page - http://localhost:8000/mic
+    Opens your microphone, streams 16 kHz mono PCM to the server, shows the
+    pairing code, then the live risk band and a scrolling spectrogram whose
+    colour tracks the band. Chrome or Edge; localhost only, because
+    getUserMedia needs a secure context.
+
+(b) Chrome extension - extension/, Manifest V3, Chrome/Edge 116+
+    Load unpacked from chrome://extensions. Captures the audio of a Google
+    Meet TAB - that is, the other participants, not your microphone, which
+    is the right way round for detecting whether the person calling YOU is
+    synthetic. Shows the band in the popup and as an overlay on the Meet
+    page. The extension is a thin client; all detection happens in Python.
+
+    Note: tab audio is the MIXED output of the call. With three people
+    speaking you get all three in one stream, so a score applies to the
+    4-second window, not to a named participant. Per-speaker attribution
+    would need diarisation, which SONIX does not do.
+
+
+====================================================================
+5. WHAT WORKS TODAY - verified, not claimed
+====================================================================
+  - Microphone capture -> 16 kHz int16 PCM -> WebSocket -> server
+  - Google Meet tab capture through the extension
+  - The consent gate: audio really is discarded until a code is approved
+  - 4-second windowing on a 0.5 s hop (RingBuffer, capacity 64000 @ 16 kHz)
+  - VAD / silence gate, with per-window rms, peak and speech_ratio logged
+  - Audit records written to outputs/calls/
+  - Dashboard: telemetry, timeline, approval, audio-path view
+  - Mic page: risk band + live spectrogram, correctly hidden when scoring
+    is unavailable
+  - Offline extraction runs end to end (50/50 files, correct (50,1024)
+    shape, ~2.1 files/sec on the GPU)
+  - demo/ mock streaming mode, tests pass, serves HTTP 200 on :8501
+
+
+====================================================================
+6. WHAT DOES NOT WORK YET - the honest list
+====================================================================
+The plumbing is finished. Both ENDS of the pipeline are placeholders.
+
+  (a) No trained head exists.
+      A search for *.pt under outputs/ returns nothing. head.pt has never
+      been produced or committed on this machine. Without --ckpt the server
+      sets scoring_available = False, and the UI shows "Scoring unavailable"
+      rather than a number. That is deliberate.
+
+  (b) RESOLVED 2026-09-01. The realtime embedding step used to be a stub
+      returning np.random.randn(1024), so live audio was discarded and
+      replaced with noise. The live path now scores through the SAME code
+      the offline pipeline and the Streamlit demo use:
+          realtime/checkpoint.py loads demo/score_file.py by file path and
+          exposes WindowScorer.score(windows) -> P(synthetic);
+          realtime/engine.py batches raw 64000-sample windows straight into
+          it, so wav2vec2 + the trained head run once per batch on the GPU,
+          off the event loop via asyncio.to_thread.
+      A live score and an offline score of the same audio now agree by
+      construction, because there is only one implementation.
+
+  (c) RESOLVED 2026-09-01. realtime/checkpoint.py is a real loader. A missing
+      or unloadable checkpoint no longer crashes the server: it logs, falls
+      back to mock, and leaves scoring_available False, so capture, consent
+      and the audit trail still demo. scoring_available is now derived from
+      what actually loaded, not from whether --ckpt was passed.
+
+      STILL BLOCKED ON THE WEIGHTS. There is no .pt file in this checkout,
+      and none in ANY branch: `git rev-list --all --objects` finds zero
+      .pt/.pth/.ckpt/.safetensors objects in the whole repository. .gitignore
+      excludes *.pt and outputs/, so head.pt CANNOT be obtained by git pull -
+      it has to be copied from Yugal's machine by file transfer into
+      outputs/models/head.pt. Once it is there:
+          python -m realtime.server --ckpt outputs/models/head.pt \
+                 --ws-port 8000 --mode webrtc
+      and the band appears on its own. No code change needed.
+
+      MEANWHILE, THE PATH IS TESTABLE WITHOUT THE REAL WEIGHTS:
+          python -m realtime.make_dev_head        # untrained head_dev.pt
+          python -m realtime.selftest --ckpt outputs/models/head_dev.pt
+      make_dev_head writes a structurally valid but UNTRAINED head stamped
+      synthetic=True. The server reads that flag, logs a warning, reports
+      scoring_synthetic in /api/status, and the capture page shows a banner
+      saying every score is noise. It exists to prove plumbing and measure
+      latency, never to demo. Delete it when the real checkpoint arrives.
+      selftest is also the acceptance test for the real head:
+          python -m realtime.selftest --ckpt outputs/models/head.pt --wav testcall.wav
+
+  (d) MockScorer output is not a verdict.
+      realtime/mock.py returns np.random.RandomState(42).rand(n) * 0.5.
+      It is capped at 0.5, so mock can never produce a Red. Score values
+      already sitting in outputs/calls/*.json came from this and mean
+      nothing about any voice.
+
+  (e) No EER has been reproduced ON THIS MACHINE - no training run has
+      completed here and no .pt file exists in this checkout. The number
+      itself does exist: docs/handoff/SONIX_REFERENCE.md records
+      1.49% EER on ASVspoof2019 LA eval, produced on a teammate's machine.
+      Quote it as that - "1.49% on ASVspoof2019 LA eval" - and say where it
+      came from. A RawBoost-augmented head_robust.pt is in training as of
+      2026-09-01; its number does not exist yet.
+
+  (f) Dataset is incomplete.
+      data/ holds 55439 eval flac files; the full set is 71933. Only
+      ASVspoof2019_LA_eval and ASVspoof2019_LA_asv_protocols are present -
+      no train split, no dev split, and no LA_cm_protocols directory, which
+      is the one src/verify_protocol.py actually needs. The gate cannot pass
+      in this state.
+
+  (g) RESOLVED 2026-09-01. Async tests previously failed 12 of 15 with
+      "async def functions are not natively supported" - pytest-asyncio was
+      listed in requirements.txt but not installed. Installing it fixed all
+      12; the code was never at fault. Now 15 passed.
+
+  (g2) demo/test_suryansh.py is named like a pytest file but collects ZERO
+      tests. It is a top-level script whose asserts run at import time, so
+      pytest reports a collection ERROR rather than a test failure and it
+      adds nothing to the pass count. Run it directly instead:
+      python demo/test_suryansh.py
+
+  (g3) Three different sets of band thresholds coexist:
+          realtime (live_ui.py, /mic page)  0.35 / 0.65
+          demo/app.py slider defaults       0.10 / 0.90
+          demo/test_suryansh.py             0.45 / 0.70
+      The demo exposes them as operator sliders, so this is not necessarily
+      a bug - but the same score gives a different band depending on which
+      UI you are looking at. Worth settling before a demo.
+
+  (h) Two copies of score_file.py (demo/ and src/) and two of make_codec.py
+      (root and src/). Which one real mode binds to is unsettled.
+
+CONSEQUENCE, stated plainly: SONIX cannot currently tell you whether a voice
+is real or cloned. What it can demonstrate today, genuinely and end to end,
+is capture, consent, windowing, the silence gate, the audit trail and the
+whole UI - with the verdict correctly withheld rather than faked.
+
+
+====================================================================
+7. LIMITATIONS THAT WILL REMAIN AFTER THE GAPS ARE CLOSED
+====================================================================
+  - Mixed audio only. No per-speaker attribution, no diarisation.
+  - One monitored tab at a time in the extension.
+  - Chrome and Edge only. Firefox has no chrome.tabCapture equivalent.
+  - The server must be reachable on localhost. This is not a hosted service.
+  - getUserMedia needs a secure context: localhost works, a LAN IP will fail
+    silently without HTTPS.
+  - Meet's own noise suppression and AGC alter the audio before SONIX sees
+    it. That is domain shift on top of the shift the model already faces,
+    and it is a fair thing for a jury to press on.
+  - Thresholds are uncalibrated (section 3).
+  - A 4-second window means a 4-second minimum latency to the first verdict.
+  - GPU throughput is the real-time constraint, and it is TIGHT on the
+    GTX 1650. Measured 2026-09-01 with realtime/selftest.py, against the
+    0.5 s hop budget one batch must fit inside:
+        batch 1  -> 133 ms   PASS (a single call: comfortable, 3.8x headroom)
+        batch 2  -> 190 ms   PASS
+        batch 4  -> 394 ms   PASS, only 106 ms spare
+        batch 8  -> 744 ms   FAIL - 1.5x over budget
+    The server default is max_batch_size=8, which overruns on this GPU once
+    a backlog or a second call fills a batch: windows queue and the band
+    lags the call. On a GTX 1650 run with --max-batch-size 4. Re-measure on
+    the actual demo machine; the RTX 4060s will differ.
+
+
+====================================================================
+8. PRIVACY POSTURE
+====================================================================
+  - Audio leaves the browser only to localhost. Nothing is sent anywhere else.
+  - Audio is held in a 4-second ring buffer and continuously overwritten.
+    It is never written to disk.
+  - The audit record stores events and scores, not audio.
+  - The consent gate is enforced server-side, not by the client UI.
+
+None of which removes the obligation to tell people on a call that it is
+being monitored. Recording law varies by jurisdiction and by whether all
+parties must consent. For demos, use your own team.
+
+
+====================================================================
+9. HOW TO READ A RESULT, ONCE ONE EXISTS
+====================================================================
+  low single-digit EER      working
+  ~40% EER                  bug - almost always a protocol parse error or a
+                            flipped label. Re-run the gate.
+  exactly 0% EER            eval leaked into training
+  In-the-Wild or codec-degraded EER much worse than clean eval
+                            EXPECTED. This is the project's headline
+                            generalization-gap finding, not a bug to hide.
+
+
+====================================================================
+10. STANDING RULES
+====================================================================
+  1. Never invent a number. If a script has not produced a real result, say so.
+  2. If a script fails, paste the full traceback, not a summary.
+  3. Do not modify a script you were handed without checking with its owner -
+     other people's runs depend on its exact output format.
+  4. Cache everything expensive. Extraction is the slow step.
+  5. Mock before you integrate; do not block on a teammate's output.

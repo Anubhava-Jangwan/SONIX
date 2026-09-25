@@ -4,6 +4,8 @@ import asyncio
 import argparse
 import logging
 import json
+import os
+import tempfile
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, Set, Optional
@@ -17,8 +19,54 @@ from realtime.pairing import PairingCodeManager
 from realtime.source import WavFileSource, MicSource
 from realtime.miccapture import mic_page_handler
 from realtime.resample import TARGET_SR, pcm16_to_float32, resample
+from realtime import models as model_registry
 
 logger = logging.getLogger(__name__)
+
+# aiohttp defaults to a 1 MB request body, which rejects essentially every real
+# call recording with a bare "Content Too Large". 256 MB is far more than any
+# clip we demo and still bounded.
+MAX_UPLOAD_BYTES = 256 * 1024 * 1024
+
+# What a browser's AudioContext can plausibly report. Anything else is either a
+# typo or an attempt to make resample() allocate.
+ALLOWED_SAMPLE_RATES = frozenset({8000, 11025, 16000, 22050, 24000,
+                                  32000, 44100, 48000, 96000})
+
+# Telemetry rows per request. The dashboard asks for 240; the cap stops a single
+# query from serialising an entire long call.
+MAX_TELEMETRY_LIMIT = 2000
+
+
+def _origin_allowed(request, ws_port: int) -> bool:
+    """True if this request came from our own page, or carries no Origin.
+
+    Non-browser clients (curl, the Asterisk bridge, tests) send no Origin and
+    are unaffected. A browser always sends one, so this is what stops a random
+    page the operator visited from driving the local server -- WebSockets are
+    exempt from the same-origin policy, and a multipart POST is not preflighted,
+    so neither is blocked by anything else.
+    """
+    origin = request.headers.get("Origin")
+    if not origin:
+        return True
+    allowed = {f"http://localhost:{ws_port}", f"http://127.0.0.1:{ws_port}",
+               f"https://localhost:{ws_port}", f"https://127.0.0.1:{ws_port}"}
+    extra = os.environ.get("SONIX_ALLOWED_ORIGINS", "")
+    allowed |= {o.strip() for o in extra.split(",") if o.strip()}
+    # The Chrome extension talks to the server from its own origin.
+    return origin in allowed or origin.startswith("chrome-extension://")
+
+
+def _engine_task_died(task):
+    """Log a scoring-loop crash instead of letting asyncio swallow it."""
+    if task.cancelled():
+        return
+    exc = task.exception()
+    if exc is not None:
+        logger.critical("SCORING ENGINE STOPPED: %r - no further window "
+                        "will be scored until the server is restarted.",
+                        exc, exc_info=exc)
 
 
 class SonicServer:
@@ -28,30 +76,58 @@ class SonicServer:
         self,
         port: int = 5000,
         ws_port: int = 8000,
-        mock: bool = True,
+        mock: bool = False,
         checkpoint: Optional[str] = None,
         mode: str = "voip",
         max_calls: int = 4,
+        max_batch_size: int = 8,
         host: str = "0.0.0.0",
         output_dir: str = "outputs/calls"
     ):
         self.port = port
         self.ws_port = ws_port
         self.mock = mock
-        self.checkpoint = checkpoint
         self.mode = mode
         self.max_calls = max_calls
+        self.max_batch_size = max_batch_size
         self.host = host
         self.output_dir = output_dir
 
         Path(self.output_dir).mkdir(parents=True, exist_ok=True)
 
-        self.engine = ScoringEngine(
-            mock=mock,
-            checkpoint_path=checkpoint,
-            device="cuda",
-            on_broadcast=self._on_scores_ready
-        )
+        # main() already resolves a default head, but anything that constructs
+        # the server directly (tests, notebooks, the selftest harness) would
+        # otherwise silently get the mock scorer despite mock=False.
+        if not mock and checkpoint is None:
+            catalogue = model_registry.catalogue()
+            present = [m for m in catalogue if m["exists"]]
+            if present:
+                default = next((m for m in present if m["key"] == model_registry.DEFAULT_KEY),
+                               present[0])
+                checkpoint = default["resolved_path"]
+        self.checkpoint = checkpoint
+
+        # A missing or unloadable checkpoint must not stop the server: capture,
+        # consent and the audit trail are still worth demonstrating. We fall back
+        # to mock and leave scoring switched off rather than exiting.
+        self.load_error = None
+        try:
+            self.engine = ScoringEngine(
+                mock=mock,
+                checkpoint_path=checkpoint,
+                device=None,          # let score_file pick cuda/cpu itself
+                max_batch_size=max_batch_size,
+                on_broadcast=self._on_scores_ready
+            )
+        except Exception as e:
+            if mock:
+                raise
+            self.load_error = str(e)
+            logger.error(f"Checkpoint failed to load ({e}). Falling back to mock; "
+                         "scoring stays switched off.")
+            self.mock = mock = True
+            self.engine = ScoringEngine(
+                mock=True, on_broadcast=self._on_scores_ready)
 
         self.pairing_manager = PairingCodeManager(expiry_sec=120)
         self.ws_clients: Set[web.WebSocketResponse] = set()
@@ -64,7 +140,17 @@ class SonicServer:
         # Only true once a REAL trained head is loaded. The dashboard hides the
         # risk band while this is False, so we never show a number that came
         # from a mock scorer as if it meant something.
-        self.scoring_available = (not mock) and checkpoint is not None
+        # Derived from what actually loaded, not from which flags were passed.
+        self.scoring_available = (not mock) and self.load_error is None
+
+        # True when the loaded head is an UNTRAINED dev checkpoint. Scoring is
+        # still "available" so the whole path can be exercised, but every client
+        # must label the output as meaningless.
+        self.scoring_synthetic = bool(
+            getattr(self.engine, "config", {}).get("synthetic", False))
+        if self.scoring_synthetic:
+            logger.warning("SYNTHETIC checkpoint loaded - scores are NOISE. "
+                           "Plumbing and latency testing only, never a demo.")
 
         logger.info(f"Server initialized: mode={mode}, max_calls={max_calls}, mock={mock}")
 
@@ -148,6 +234,11 @@ class SonicServer:
 
     async def websocket_handler(self, request):
         """WebSocket endpoint for live UI."""
+        if not _origin_allowed(request, self.ws_port):
+            logger.warning("rejected /ws from origin %r",
+                           request.headers.get("Origin"))
+            return web.Response(status=403, text="origin not allowed")
+
         ws = web.WebSocketResponse()
         await ws.prepare(request)
         self.ws_clients.add(ws)
@@ -168,16 +259,37 @@ class SonicServer:
                     try:
                         data = json.loads(msg.data)
 
-                        if data.get("type") == "approve_pairing":
-                            call_id = data.get("call_id")
-                            await self._on_pairing_approved(call_id)
-
-                        elif data.get("type") == "end_call":
-                            call_id = data.get("call_id")
-                            await self._on_call_ended(call_id)
+                        # NOTE: there is deliberately no "approve_pairing" here.
+                        # Consent is granted ONLY over POST /api/approve. The WS
+                        # branch that used to exist took a call_id straight off
+                        # the wire with no ownership check and never asked for
+                        # the pairing code -- and /ws has no origin check, so any
+                        # page the operator visited could approve consent on a
+                        # live session. No client ever used it: live_ui.py:715
+                        # and website/script.js both POST /api/approve.
+                        if data.get("type") == "end_call":
+                            # Only the call this socket started. Every real
+                            # caller (script.js, miccapture.py, extension
+                            # offscreen.js) already sends its own call_id, so
+                            # this changes no legitimate flow.
+                            owned = self.ws_calls.get(ws)
+                            asked = data.get("call_id")
+                            if owned and (asked is None or asked == owned):
+                                await self._on_call_ended(owned)
+                            else:
+                                logger.warning(
+                                    "refused end_call for %r from a socket owning %r",
+                                    asked, owned)
+                                await ws.send_str(json.dumps({
+                                    "type": "error",
+                                    "message": "end_call is only allowed for this connection's own call",
+                                }))
 
                         elif data.get("type") == "start_mic_call":
                             await self._start_mic_call(ws, data)
+
+                        elif data.get("type") == "set_model":
+                            await self._set_call_model(ws, data)
 
                         elif data.get("type") == "ping":
                             await ws.send_str(json.dumps({
@@ -187,7 +299,15 @@ class SonicServer:
                             }))
 
                     except json.JSONDecodeError:
-                        logger.warning(f"Invalid JSON: {msg.data}")
+                        logger.warning("Invalid JSON on /ws (%d bytes)", len(msg.data or ""))
+                    except Exception:
+                        # A bad field (e.g. sample_rate="x") used to raise out of
+                        # `async for` and kill the whole socket. Report and keep
+                        # the connection alive instead.
+                        logger.exception("WS message handler failed")
+                        await ws.send_str(json.dumps({
+                            "type": "error", "message": "could not process that message",
+                        }))
 
                 elif msg.type == web.WSMsgType.BINARY:
                     # Raw int16 PCM from the browser microphone.
@@ -214,6 +334,61 @@ class SonicServer:
 
         return ws
 
+    async def _set_call_model(self, ws, data: dict):
+        """Re-point THIS socket's live call at a different head, mid-call.
+
+        The extension's side panel offers a model picker while a call is
+        running. Restarting the call to honour it would mint a new call_id and
+        send the operator back through the consent gate -- that is a new call,
+        not a model change, and it throws away the score history on screen.
+
+        The swap itself is cheap for the same reason it is cheap in the demo:
+        the ~300M front-end is frozen and shared by every head, so this only
+        has to point the session at a different ~300k-param MLP. The audio
+        stream is never interrupted.
+
+        Ownership is checked exactly as end_call checks it -- a socket may only
+        re-point the call it started. /ws has no origin check, so without this
+        any page the operator had open could silently change which model a live
+        call is being judged by.
+        """
+        owned = self.ws_calls.get(ws)
+        asked = data.get("call_id")
+        if not owned or (asked is not None and asked != owned):
+            logger.warning("refused set_model for %r from a socket owning %r",
+                           asked, owned)
+            await ws.send_str(json.dumps({
+                "type": "error",
+                "message": "set_model is only allowed for this connection's own call",
+            }))
+            return
+
+        session = self.sessions.get(owned)
+        if session is None:
+            return
+
+        key = (data.get("model") or "").strip()
+        if not key:
+            return
+
+        if not self.mock:
+            try:
+                await asyncio.to_thread(self.engine.ensure_model, key)
+            except Exception as exc:
+                await ws.send_str(json.dumps({
+                    "type": "error",
+                    "message": f"model '{key}' unavailable: {exc}",
+                }))
+                return
+
+        # Same object the engine holds in its own sessions dict, so this is all
+        # engine.session_model_key() needs to start reading on the next batch.
+        session.model_key = key
+        logger.info("call %s switched to head '%s' mid-call", owned, key)
+        await ws.send_str(json.dumps({
+            "type": "model_changed", "call_id": owned, "model": key,
+        }))
+
     async def _start_mic_call(self, ws, data: dict):
         """Create a session fed by browser microphone audio over this socket."""
         if len(self.sessions) >= self.max_calls:
@@ -222,16 +397,66 @@ class SonicServer:
             }))
             return
 
-        call_id = f"mic_{datetime.now().strftime('%Y%m%dT%H%M%S')}"
+
+        # Same "which head" pick the upload path offers, mirrored here so the
+        # live capture widget on the website can pass a model too instead of
+        # always taking the server default.
+        requested = (data.get("model") or "").strip() or None
+        if requested and not self.mock:
+            try:
+                await asyncio.to_thread(self.engine.ensure_model, requested)
+            except Exception as exc:
+                await ws.send_str(json.dumps({
+                    "type": "error", "message": f"model '{requested}' unavailable: {exc}"
+                }))
+                return
+        model_key = requested or (self.engine.default_key if not self.mock else None)
+
+        # Microseconds, matching the upload path below. Second resolution was
+        # survivable while calls were minted by hand, but the panel's "New
+        # code" button ends a call and starts another back to back -- two mic
+        # calls inside the same second is now the normal case, not a fluke,
+        # and a collision silently overwrites self.sessions[call_id] and
+        # collides in the audit record.
+        call_id = f"mic_{datetime.now().strftime('%Y%m%dT%H%M%S_%f')}"
         pairing_code = self.pairing_manager.generate()
-        sample_rate = int(data.get("sample_rate") or TARGET_SR)
+
+        # Browsers report ctx.sampleRate, which is one of a small known set.
+        # Unvalidated, int("x") raised straight out of the message loop and
+        # killed the socket, and a huge value reached resample() as an
+        # allocation size.
+        raw_sr = data.get("sample_rate") or TARGET_SR
+        try:
+            sample_rate = int(raw_sr)
+        except (TypeError, ValueError):
+            sample_rate = None
+        if sample_rate not in ALLOWED_SAMPLE_RATES:
+            await ws.send_str(json.dumps({
+                "type": "error",
+                "message": f"unsupported sample_rate {raw_sr!r}; "
+                           f"expected one of {sorted(ALLOWED_SAMPLE_RATES)}",
+            }))
+            return
 
         source = MicSource(caller=data.get("caller", "browser-mic"), sample_rate=sample_rate)
-        session = Session(call_id, source, pairing_code=pairing_code)
+        session = Session(call_id, source, pairing_code=pairing_code,
+                          vad_energy=getattr(self, 'vad_energy', None),
+                          model_key=model_key)
 
         # CONNECTING -> CONSENT_PENDING. Without this, on_pairing_approved() is a
         # no-op and push_audio() silently drops every chunk.
         await session.request_consent()
+
+        # The engine only scores sessions in LISTENING/SCORING. Until pairing is
+        # approved nothing is scored and the dashboard looks silently broken --
+        # which is exactly what it did. --auto-approve skips that for demos.
+        is_auto = bool(getattr(self, 'auto_approve', False))
+        if is_auto:
+            await session.on_pairing_approved()
+            # There is nothing left to approve, and showing a live-looking code
+            # that no longer gates anything just invites someone to type it in.
+            pairing_code = None
+            logger.info(f"[{call_id}] auto-approved (--auto-approve): scoring now")
 
         await self.engine.add_session(session)
         self.sessions[call_id] = session
@@ -243,15 +468,25 @@ class SonicServer:
             "call_id": call_id,
             "pairing_code": pairing_code,
             "sample_rate": sample_rate,
+            "model": model_key,
         }))
-        await self._broadcast({
-            "type": "pairing_request",
-            "call_id": call_id,
-            "pairing_code": pairing_code,
-            "expires_in": 120,
-            "caller": source.caller,
-        })
-        logger.info(f"Mic call {call_id} started @ {sample_rate} Hz, code {pairing_code}")
+        if is_auto:
+            # Without this the capture page sits in "waiting for approval"
+            # forever, because no pairing_request is ever broadcast.
+            await ws.send_str(json.dumps({
+                "type": "call_state",
+                "call_id": call_id,
+                "state": "listening",
+            }))
+        else:
+            await self._broadcast({
+                "type": "pairing_request",
+                "call_id": call_id,
+                "pairing_code": pairing_code,
+                "expires_in": 120,
+                "caller": source.caller,
+            })
+        logger.info(f"Mic call {call_id} started @ {sample_rate} Hz, code {pairing_code}, model={model_key}")
 
     async def http_approve_handler(self, request):
         """Approve a pairing code from the dashboard (HTTP, so Streamlit can call it)."""
@@ -259,6 +494,14 @@ class SonicServer:
             data = await request.json()
         except Exception:
             return web.json_response({"error": "expected JSON body"}, status=400)
+
+        # Consent approval is the one privileged action in this server. There is
+        # no login, so an origin check is the available control: it stops a page
+        # the operator happens to have open from silently approving a live call.
+        # The dashboard legitimately approves calls it did not create
+        # (live_ui.py:715), so ownership binding would be wrong here.
+        if not _origin_allowed(request, self.ws_port):
+            return web.json_response({"error": "origin not allowed"}, status=403)
 
         call_id = data.get("call_id")
         session = self.sessions.get(call_id)
@@ -275,6 +518,9 @@ class SonicServer:
         except Exception:
             return web.json_response({"error": "expected JSON body"}, status=400)
 
+        if not _origin_allowed(request, self.ws_port):
+            return web.json_response({"error": "origin not allowed"}, status=403)
+
         call_id = data.get("call_id")
         if call_id not in self.sessions:
             return web.json_response({"error": f"unknown call {call_id}"}, status=404)
@@ -285,7 +531,16 @@ class SonicServer:
     async def http_telemetry_handler(self, request):
         """Per-call window telemetry for the dashboard chart."""
         wanted = request.query.get("call_id")
-        limit = int(request.query.get("limit", 240))
+        # int() on a non-numeric query string raised ValueError, which aiohttp
+        # turned into a 500 with a traceback. Bound it too, so one query cannot
+        # serialise an entire long call.
+        raw_limit = request.query.get("limit", 240)
+        try:
+            limit = int(raw_limit)
+        except (TypeError, ValueError):
+            return web.json_response(
+                {"error": "limit must be an integer"}, status=400)
+        limit = max(1, min(limit, MAX_TELEMETRY_LIMIT))
 
         calls = {
             cid: s.telemetry(limit=limit)
@@ -294,6 +549,10 @@ class SonicServer:
         }
         return web.json_response({
             "scoring_available": self.scoring_available,
+            "warm": bool(getattr(self.engine, "warm", True)),
+            "warming": bool(getattr(self.engine, "warming", False)),
+            "models": self.engine.model_catalogue() if not self.mock else [],
+            "default_model": self.engine.default_key if not self.mock else None,
             "mode": self.mode,
             "active_calls": len(self.sessions),
             "max_calls": self.max_calls,
@@ -302,64 +561,270 @@ class SonicServer:
             "timestamp": datetime.now().isoformat(),
         })
 
-    async def http_upload_handler(self, request):
-        """Handle WAV file uploads for post-call scoring."""
+    async def http_models_handler(self, request):
+        """Which trained heads this server can score with, and which exist on disk."""
+        return web.json_response({
+            "mock": self.mock,
+            "warm": bool(getattr(self.engine, "warm", True)),
+            "warming": bool(getattr(self.engine, "warming", False)),
+            "default": self.engine.default_key if not self.mock else None,
+            "models": self.engine.model_catalogue() if not self.mock else [],
+        })
+
+    @staticmethod
+    def _adaptive_vad_floor(samples, frame: int = 400):
+        """Pick a silence-gate energy floor from the clip's own speech level.
+
+        The gate's default floor is a FIXED 0.01 RMS (~-40 dBFS per 25 ms
+        frame), tuned for studio-level speech. A phone recording, a quiet room
+        or a distant mic sits entirely below it, so every window is thrown away
+        as "silence" and the upload scores nothing at all -- which is what the
+        dashboard was reporting. Scaling the floor to the clip keeps genuine
+        digital silence out while letting quiet speech through.
+
+        Returns (floor, speech_rms, floor_dbfs) or None if the clip is empty.
+        """
+        w = np.asarray(samples, dtype=np.float32).reshape(-1)
+        if w.size < frame:
+            return None
+        nf = w.size // frame
+        rms = np.sqrt(np.mean(np.square(w[:nf * frame].reshape(nf, frame).astype(np.float64)), axis=1))
+        speech = float(np.percentile(rms, 90))          # a loud frame, not the peak
+        floor = float(np.clip(speech * 0.12, 0.0006, 0.01))
+
+        # The 0.0006 lower clamp defeats the whole point of adapting for a very
+        # quiet clip: below roughly -65 dBFS it lands ABOVE the clip's own
+        # speech level, so every frame fails the energy test and the upload
+        # scores 0 of N windows. Measured: p90 frame RMS 0.000564 -> clamped
+        # floor 0.0006 -> 0/41 windows passed. Cap the floor at half the
+        # measured speech level so it can never exceed the signal it is meant
+        # to sit under. Dead audio is still rejected -- the ZCR ceiling catches
+        # it independently of energy (digital silence zcr=0.000, dither and
+        # room tone zcr~0.50, all rejected with the energy gate fully open).
+        floor = min(floor, speech * 0.5)
+        return floor, speech, 20.0 * np.log10(max(floor, 1e-12))
+
+    async def _feed_upload(self, call_id: str, session, source, chunk: int = 8000,
+                           pace: float = 0.02):
+        """Push an uploaded file into a session in the background.
+
+        This used to run inline inside the request, so the browser sat on a
+        blocked POST for the whole clip and every score arrived at once at the
+        end. Feeding in a task means the dashboard can poll /api/telemetry and
+        watch the risk line build window by window, which is the whole point of
+        a live-audio demo.
+        """
         try:
+            while True:
+                samples = source.read(chunk)
+                if samples is None or len(samples) == 0:
+                    break
+                await session.push_audio(samples)
+                await asyncio.sleep(pace)
+        except Exception as exc:
+            # Record it on the session too. This failing silently is exactly
+            # how a 62-window clip came back with one score and a green band.
+            session.feed_error = f"{type(exc).__name__}: {exc}"
+            logger.error(f"[{call_id}] upload feed failed: {exc}", exc_info=True)
+        finally:
+            session.feed_done = True
+            logger.info(f"[{call_id}] upload feed finished "
+                        f"({session.ringbuffer.windows_emitted} windows emitted)")
+
+    async def http_upload_handler(self, request):
+        """Accept a file, start scoring it, and return immediately.
+
+        The response carries the call_id and how many windows to expect; the
+        dashboard then polls /api/telemetry?call_id=... and draws the timeline
+        as the scores land. Pass wait=1 to get the old blocking behaviour back
+        (used by scripts that just want the final numbers).
+        """
+        temp_path = None
+        try:
+            # multipart/form-data is a "simple request": no CORS preflight, so
+            # nothing else stops a cross-origin page from queueing inference.
+            if not _origin_allowed(request, self.ws_port):
+                return web.json_response({"error": "origin not allowed"}, status=403)
+
             data = await request.post()
             file_field = data.get('file')
 
             if not file_field:
                 return web.json_response({"error": "No file provided"}, status=400)
 
-            call_id = f"upload_{datetime.now().isoformat().replace(':', '-')}"
-            logger.info(f"Processing upload: {call_id}")
+            gate = (data.get('vad') or 'auto').strip().lower()
+            requested = (data.get('model') or '').strip() or None
+            if requested and not self.mock:
+                try:
+                    await asyncio.to_thread(self.engine.ensure_model, requested)
+                except Exception as exc:
+                    return web.json_response(
+                        {"error": f"model '{requested}' unavailable: {exc}"}, status=400)
 
-            temp_path = f"/tmp/{call_id}.wav"
-            with open(temp_path, 'wb') as f:
-                f.write(file_field.file.read())
+            wait = str(data.get('wait') or '').lower() in ('1', 'true', 'yes')
+
+            call_id = f"upload_{datetime.now().strftime('%Y%m%dT%H%M%S_%f')}"
+            model_key = requested or (self.engine.default_key if not self.mock else None)
+            logger.info(f"Processing upload: {call_id} (model={model_key})")
+
+            # /tmp does not exist on Windows -- this used to fail outright there.
+            suffix = Path(getattr(file_field, "filename", "") or "upload.wav").suffix or ".wav"
+            fd = tempfile.NamedTemporaryFile(delete=False, suffix=suffix,
+                                             prefix=f"sonix_{call_id}_")
+            fd.write(file_field.file.read())
+            fd.close()
+            temp_path = fd.name
 
             source = WavFileSource(temp_path)
-            session = Session(call_id, source, pairing_code="upload_mode", pairing_expiry_sec=1)
+            try:
+                # Decoding + resampling is CPU work; a long clip would otherwise
+                # stall every other request for its duration.
+                duration = await asyncio.to_thread(lambda: source.duration_sec)
+            except Exception as exc:
+                return web.json_response({"error": f"could not decode audio: {exc}"},
+                                         status=400)
+
+            n = int(round(duration * TARGET_SR))
+            win, hop = 64000, 8000
+            if n < win:
+                # A clip shorter than one window emits NOTHING in the live path.
+                # Repeat-pad it rather than zero-pad: padding with digital
+                # silence is exactly the bug that made short real clips score
+                # 0.88 ("fake") instead of 0.03 ("real").
+                source._load()
+                reps = int(np.ceil(win / max(1, source._samples.size)))
+                source._samples = np.tile(source._samples, reps)[:win].astype(np.float32)
+                source._pos = 0
+                n = win
+                logger.info(f"[{call_id}] clip is {duration:.2f}s (< 4s); "
+                            f"repeat-padded to one full window")
+            expected_windows = (n - win) // hop + 1
+
+            # Silence gate: "off" scores every window, "strict" keeps the
+            # fixed studio-level default, "auto" (the default) scales the floor
+            # to this clip so a quiet recording is not discarded wholesale.
+            vad_floor = getattr(self, 'vad_energy', None)
+            vad_note = "server default"
+            if gate == "off":
+                vad_floor, vad_note = 0.0, "disabled - every window scored"
+            elif gate != "strict" and vad_floor is None:
+                source._load()
+                adapt = self._adaptive_vad_floor(source._samples)
+                if adapt:
+                    vad_floor, speech, floor_db = adapt
+                    vad_note = (f"auto {vad_floor:.5f} ({floor_db:.1f} dBFS) "
+                                f"from speech level {speech:.5f}")
+
+            session = Session(call_id, source, pairing_code="upload_mode",
+                              pairing_expiry_sec=1,
+                              vad_energy=vad_floor,
+                              model_key=model_key)
+            session.expected_windows = int(expected_windows)
+            logger.info(f"[{call_id}] silence gate: {vad_note}")
 
             await session.request_consent()
             await session.on_pairing_approved()
             await self.engine.add_session(session)
             self.sessions[call_id] = session
 
-            while True:
-                samples = source.read(8000)
-                if samples is None or len(samples) == 0:
-                    break
-                await session.push_audio(samples)
-                await asyncio.sleep(0.01)
+            # The 20ms-per-chunk pacing exists so the STREAMING path can watch
+            # the risk line build window by window. On the blocking path the
+            # caller only wants the final numbers, and that pacing is ~1s of
+            # pure sleep on a 25s clip (50 chunks x 20ms) before inference even
+            # starts. Feed it as fast as the loop allows instead.
+            feed = asyncio.create_task(
+                self._feed_upload(call_id, session, source,
+                                  pace=0.0 if wait else 0.02))
 
-            await asyncio.sleep(0.5)
+            if not wait:
+                return web.json_response({
+                    "call_id": call_id,
+                    "status": "streaming",
+                    "model": model_key,
+                    "duration_s": round(float(duration), 3),
+                    "expected_windows": int(expected_windows),
+                    "vad": vad_note,
+                    "poll": f"/api/telemetry?call_id={call_id}",
+                })
+
+            # Blocking path: wait for the feed, then for scoring to drain.
+            #
+            # expected_windows counts what the ring buffer EMITS. The silence
+            # gate then drops some of those, so len(scores) can never reach it
+            # whenever any window is gated -- and the old condition never broke
+            # on a drained queue either (it tested `not pending_windows`, then
+            # fell through to sleep because the inner test still failed). Every
+            # upload with a quiet lead-in therefore sat out the full 60s.
+            # Exit as soon as the queue has drained and no new score has landed
+            # for a short grace period, which lets an in-flight batch finish.
+            await feed
+            DEADLINE, GRACE, TICK = 60.0, 0.5, 0.1
+            waited = settled = 0.0
+            last_seen = -1
+            while waited < DEADLINE:
+                n = len(session.scores)
+                if n >= expected_windows:
+                    break
+                if n != last_seen:
+                    last_seen, settled = n, 0.0
+                elif not session.pending_windows:
+                    settled += TICK
+                    if settled >= GRACE:
+                        break
+                await asyncio.sleep(TICK)
+                waited += TICK
+
+            gated = sum(1 for w in session.window_log if not w.get("vad_passed"))
+            logger.info("[%s] upload done: %d scored, %d gated, %d expected, %.1fs wait",
+                        call_id, len(session.scores), gated, expected_windows, waited)
             await self._on_call_ended(call_id)
 
             scores_list = [s["score"] for s in session.scores.values()]
-            response = {
+            return web.json_response({
                 "call_id": call_id,
                 "status": "success",
+                "model": model_key,
                 "windows_scored": len(session.scores),
+                "expected_windows": int(expected_windows),
+                # Without this the UI shows "32 / 42" and reads as a failure,
+                # when 10 windows were correctly dropped as silence.
+                "windows_gated": int(gated),
+                "vad": vad_note,
                 "summary": {
                     "mean_score": float(np.mean(scores_list)) if scores_list else None,
                     "max_score": float(np.max(scores_list)) if scores_list else None,
                     "min_score": float(np.min(scores_list)) if scores_list else None
                 },
                 "scores": session.scores
-            }
+            })
 
-            return web.json_response(response)
-
+        except (web.HTTPRequestEntityTooLarge, ValueError) as e:
+            # aiohttp raises this while parsing an over-size body in .post().
+            logger.error(f"Upload too large: {e}")
+            return web.json_response(
+                {"error": f"file exceeds the {MAX_UPLOAD_BYTES // (1024*1024)} MB "
+                          f"upload limit"}, status=413)
         except Exception as e:
             logger.error(f"Upload handler error: {e}", exc_info=True)
             return web.json_response({"error": str(e)}, status=500)
+        finally:
+            if temp_path:
+                try:
+                    os.unlink(temp_path)
+                except OSError:
+                    pass
 
     async def http_status_handler(self, request):
         """Return server status."""
         return web.json_response({
             "status": "ok",
             "mode": self.mode,
+            # The /mic page gates its whole verdict + chart on these two, and
+            # they were only ever served on /api/telemetry - so capture worked
+            # and the live chart stayed empty for good. Both endpoints answer
+            # the same question now.
+            "scoring_available": self.scoring_available,
+            "scoring_synthetic": self.scoring_synthetic,
             "active_calls": len(self.sessions),
             "max_calls": self.max_calls,
             "engine_stats": self.engine.get_stats(),
@@ -372,7 +837,14 @@ class SonicServer:
         logger.info("=== SONIX Server Starting ===")
 
         engine_task = asyncio.create_task(self.engine.run())
+        # If the scoring loop ever dies, the server keeps accepting audio
+        # and scores nothing -- silently. Shout about it in the terminal.
+        engine_task.add_done_callback(_engine_task_died)
         logger.info(f"Engine started (mock={self.mock})")
+
+        # Pay the model-loading cost now, in a thread, instead of inside the
+        # first upload -- where it looked exactly like a hung server.
+        warm_task = asyncio.create_task(self.engine.preload())
 
         if self.mode == "voip":
             audio_server = AudioSocketServer(
@@ -382,19 +854,57 @@ class SonicServer:
             audio_task = asyncio.create_task(audio_server.run())
             logger.info(f"AudioSocket server started on :{self.port}")
 
-        app = web.Application()
+        app = web.Application(client_max_size=MAX_UPLOAD_BYTES)
         app.router.add_get('/ws', self.websocket_handler)
         app.router.add_post('/api/score-file', self.http_upload_handler)
         app.router.add_get('/api/status', self.http_status_handler)
+        app.router.add_get('/api/models', self.http_models_handler)
         app.router.add_get('/api/telemetry', self.http_telemetry_handler)
         app.router.add_post('/api/approve', self.http_approve_handler)
         app.router.add_post('/api/end-call', self.http_end_call_handler)
         app.router.add_get('/mic', mic_page_handler)
 
+        # The ONE tester-facing surface: website/ served at "/", same origin as
+        # the API. Streamlit apps (demo/app.py, realtime/live_ui.py) are
+        # internal/debug only -- testers get http://localhost:8000/ and nothing
+        # else. Registered last so /ws, /api/* and /mic keep priority.
+        website_dir = Path(__file__).resolve().parent.parent / "website"
+        if (website_dir / "index.html").is_file():
+            async def _site_index(_req):
+                return web.FileResponse(website_dir / "index.html")
+            app.router.add_get('/', _site_index)
+            app.router.add_static('/', website_dir, show_index=False)
+            logger.info(f"Tester site served at http://localhost:{self.ws_port}/")
+        else:
+            logger.warning(f"website/ not found at {website_dir} -- '/' will 404")
+
         runner = web.AppRunner(app)
         await runner.setup()
         site = web.TCPSite(runner, self.host, self.ws_port)
-        await site.start()
+        try:
+            await site.start()
+        except OSError as exc:
+            # A stale server from an earlier run holding the port is the single
+            # most common way this fails, and the raw 30-line traceback buries
+            # that. Say it plainly, with the command that fixes it.
+            print()
+            print("=" * 70)
+            print(f"PORT {self.ws_port} IS ALREADY IN USE")
+            print("=" * 70)
+            print("Another SONIX server is almost certainly still running from")
+            print("an earlier run -- and it is running the OLD code, so anything")
+            print("you test against it will behave like the old build.")
+            print()
+            print("Kill it, then start this one again:")
+            print()
+            print("    taskkill /F /IM python.exe          (Windows)")
+            print("    pkill -f realtime.server            (macOS/Linux)")
+            print()
+            print(f"Or run this server on a free port:  --ws-port {self.ws_port + 1}")
+            print("=" * 70)
+            engine_task.cancel()
+            warm_task.cancel()
+            raise SystemExit(1) from exc
 
         logger.info(f"WebSocket server started on ws://{self.host}:{self.ws_port}")
         logger.info(f"Microphone capture page: http://localhost:{self.ws_port}/mic")
@@ -419,7 +929,19 @@ def main():
                         help="Use the mock scorer (no checkpoint needed)")
     parser.add_argument('--ckpt', type=str, default=None, help="Path to head.pt")
     parser.add_argument('--mode', choices=['voip', 'webrtc', 'upload'], default='voip')
+    parser.add_argument('--auto-approve', action='store_true', default=False,
+                        help="skip the pairing/consent step and start scoring "
+                             "immediately. For demos and testing only -- the "
+                             "consent gate exists for a reason in real use.")
+    parser.add_argument('--vad-energy', type=float, default=None,
+                        help="VAD energy floor (default 0.01 ~= -40 dBFS). "
+                             "Lower it (e.g. 0.003) if a quiet mic is being "
+                             "rejected as silence and nothing gets scored.")
     parser.add_argument('--max-calls', type=int, default=4)
+    parser.add_argument('--max-batch-size', type=int, default=8,
+                        help="Windows scored per forward pass. Measure with "
+                             "realtime/selftest.py: on a GTX 1650, 8 overruns "
+                             "the 0.5s hop (744ms) but 4 fits (394ms).")
     parser.add_argument('--host', type=str, default='0.0.0.0')
     parser.add_argument('--output-dir', type=str, default='outputs/calls')
     parser.add_argument('--log-level', default='INFO')
@@ -428,10 +950,29 @@ def main():
 
     # Previously --mock defaulted to True, so real scoring was unreachable even
     # with --ckpt. Now the checkpoint decides, and we say which one is in force.
-    use_mock = args.mock or args.ckpt is None
+    # And if --ckpt is omitted we look for the known heads ourselves rather than
+    # silently dropping to mock -- having to name a path to get real scoring was
+    # the single most common way this server came up useless.
+    ckpt = args.ckpt
+    catalogue = model_registry.catalogue()
+    present = [m for m in catalogue if m["exists"]]
+    if ckpt is None and not args.mock and present:
+        default = next((m for m in present if m["key"] == model_registry.DEFAULT_KEY),
+                       present[0])
+        ckpt = default["resolved_path"]
+        print(f"[SONIX] No --ckpt given; using {default['label']} "
+              f"({default['path']}).")
+
+    use_mock = args.mock or ckpt is None
     if use_mock and not args.mock:
-        print("[SONIX] No --ckpt given; falling back to the mock scorer. "
-              "Risk band will stay hidden in the dashboard.")
+        print("[SONIX] No trained head found under outputs/models/; falling back "
+              "to the mock scorer. Risk band will stay hidden in the dashboard.")
+    if not use_mock:
+        found = ", ".join(m["label"] for m in present) or "none"
+        missing = ", ".join(m["label"] for m in catalogue if not m["exists"])
+        print(f"[SONIX] Heads available to the dashboard: {found}")
+        if missing:
+            print(f"[SONIX] Not on disk (tab will be disabled): {missing}")
 
     logging.basicConfig(
         level=args.log_level,
@@ -442,12 +983,26 @@ def main():
         port=args.port,
         ws_port=args.ws_port,
         mock=use_mock,
-        checkpoint=args.ckpt,
+        checkpoint=ckpt,
         mode=args.mode,
         max_calls=args.max_calls,
+        max_batch_size=args.max_batch_size,
         host=args.host,
         output_dir=args.output_dir
     )
+    server.auto_approve = args.auto_approve
+    server.vad_energy = args.vad_energy
+
+    if args.auto_approve:
+        print("[SONIX] --auto-approve: calls start scoring immediately, no "
+              "pairing step. Demo/testing only.")
+    else:
+        print("[SONIX] Calls wait for pairing approval before scoring. "
+              "Approve in the dashboard, POST /api/approve, or use "
+              "--auto-approve.")
+    if args.vad_energy is not None:
+        print(f"[SONIX] VAD energy floor set to {args.vad_energy} "
+              f"(default 0.01).")
 
     asyncio.run(server.run())
 
