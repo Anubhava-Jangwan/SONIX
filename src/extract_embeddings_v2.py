@@ -262,6 +262,7 @@ def main():
         "dim_per_layer": per_layer,
         "total_dim": out_dim,
         "window_samples": ee.TARGET_LEN,
+        "pad": args.pad,
         "sample_rate": TARGET_SR,
         "note": "slice block i as X[:, i*dim_per_layer:(i+1)*dim_per_layer], "
                 "where i is the POSITION in 'layers', not the layer number; for "
