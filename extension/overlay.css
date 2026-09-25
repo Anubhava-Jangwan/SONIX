@@ -109,8 +109,21 @@
   color: transparent;
 }
 
-#sonix-panel .sonix-toggle {
+#sonix-panel .sonix-ver {
   margin-left: auto;
+  font-size: 9.5px;
+  font-weight: 600;
+  letter-spacing: .06em;
+  color: var(--ink-3);
+  font-variant-numeric: tabular-nums;
+  background: var(--surface);
+  border: 1px solid var(--edge);
+  border-radius: 20px;
+  padding: 2px 7px;
+}
+
+#sonix-panel .sonix-toggle {
+  margin-left: 8px;
   background: var(--surface);
   border: 1px solid var(--edge);
   color: var(--ink-2);

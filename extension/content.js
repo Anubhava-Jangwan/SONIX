@@ -226,6 +226,16 @@ function ensurePanel() {
   const head = el("div", "sonix-head");
   const dot = el("span", "sonix-dot");
   const name = el("span", "sonix-name sonix-hide-collapsed", "SONIX");
+
+  // The build this panel is actually running, read from the manifest. Chrome
+  // keeps serving a cached content script until the extension is reloaded AND
+  // the page refreshed, and without a visible marker there is no way to tell a
+  // stale panel from a current one -- they just look like the change did not
+  // work.
+  let ver = "";
+  try { ver = chrome.runtime.getManifest().version; } catch { /* no API */ }
+  const badge = el("span", "sonix-ver sonix-hide-collapsed", ver ? `v${ver}` : "");
+
   const toggle = el("button", "sonix-toggle", "›");
   toggle.title = "Collapse panel";
   toggle.addEventListener("click", () => {
@@ -234,7 +244,7 @@ function ensurePanel() {
     toggle.title = collapsed ? "Expand panel" : "Collapse panel";
     if (!collapsed && lastState) draw(lastState);
   });
-  head.append(dot, name, toggle);
+  head.append(dot, name, badge, toggle);
 
   const verdict = el("div", "sonix-verdict sonix-hide-collapsed");
   verdict.append(el("div", "sonix-rail"),
