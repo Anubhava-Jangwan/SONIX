@@ -367,6 +367,8 @@ function removePanel() {
   clearInterval(peopleTimer);
   peopleTimer = null;
   participants.clear();
+  rowNodes.clear();
+  lastChartSig = null;
   selectedId = null;
   prevScoreCount = 0;
   if (panel && panel.parentNode) panel.parentNode.removeChild(panel);
@@ -384,13 +386,18 @@ function fitCanvas(c, cssH) {
   const dpr = window.devicePixelRatio || 1;
   const w = c.clientWidth || 300;
   const h = cssH || c.clientHeight || 100;
+  // Assigning width/height CLEARS the canvas, so it is done only on a real
+  // size change -- and reported back, because a caller that skips its redraw
+  // must not skip it on the frame the buffer was just wiped.
+  let resized = false;
   if (c.width !== Math.round(w * dpr) || c.height !== Math.round(h * dpr)) {
     c.width = Math.round(w * dpr);
     c.height = Math.round(h * dpr);
+    resized = true;
   }
   const ctx = c.getContext("2d");
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-  return { ctx, w, h };
+  return { ctx, w, h, resized };
 }
 
 /* rms -> 0..1, with a square-root curve so quiet speech is still visible.
@@ -475,9 +482,45 @@ function drawOrb(t) {
 /* The score graph                                                     */
 /* ------------------------------------------------------------------ */
 
-function drawChart(scores) {
+/* Trailing mean over `window` points.
+ *
+ * Deliberately identical to moving_average() in demo/risk.py, including the
+ * short leading window at the start of the series, so the extension and the
+ * Streamlit timeline smooth the same data the same way. Two surfaces of one
+ * product disagreeing about the shape of the same call is a bug even when
+ * both are individually defensible.
+ */
+function movingAverage(scores, window = 5) {
+  const out = new Array(scores.length);
+  for (let i = 0; i < scores.length; i++) {
+    const start = Math.max(0, i - window + 1);
+    let sum = 0;
+    for (let k = start; k <= i; k++) sum += scores[k];
+    out[i] = sum / (i - start + 1);
+  }
+  return out;
+}
+
+/* `shown` is the score the verdict above is displaying. The line is coloured
+   from it rather than from its own last point, so the graph can never show a
+   different band from the word directly above it. */
+let lastChartSig = null;
+
+function drawChart(scores, shown) {
   if (!canvas) return;
-  const { ctx, w, h } = fitCanvas(canvas, 146);
+  const { ctx, w, h, resized } = fitCanvas(canvas, 146);
+
+  // The panel redraws on every state push, which arrives far more often than
+  // the data actually changes -- and every redraw is a full clear plus two
+  // shadow-blurred passes, which is exactly what reads as flicker. Skip the
+  // frame when nothing that affects the picture has moved.
+  let sum = 0;
+  for (let i = 0; i < scores.length; i++) sum += scores[i];
+  const sig = [scores.length, sum.toFixed(4), shown, selectedId,
+               AMBER_AT, RED_AT, w, h].join("\u0001");
+  if (!resized && sig === lastChartSig) return;
+  lastChartSig = sig;
+
   ctx.clearRect(0, 0, w, h);
 
   const y = (v) => h - v * h;
@@ -514,25 +557,44 @@ function drawChart(scores) {
   }
 
   const x = (i) => (i / (MAX_POINTS - 1)) * w;
-  const line = COLOUR[bandOf(scores[scores.length - 1])] || COLOUR.idle;
 
-  /* Smooth curve through the points, drawn as quadratic segments between
-     midpoints. A polyline through per-window scores is visually noisy and
-     invites reading each vertex as an event; the eye should follow the trend,
-     and the exact values are on the axis. */
+  /* The plotted line is the moving average, not the raw per-window scores.
+     A single 4 s window swings a long way on its own -- one breath, one
+     clipped consonant -- and a line through the raw points reads as a voice
+     flipping between authentic and synthetic several times a second, which is
+     not what the model is saying. The raw values stay on screen as faint dots
+     underneath, so the smoothing hides nothing. */
+  const smooth = movingAverage(scores, 5);
+
+  const tip = shown !== null && shown !== undefined
+    ? shown
+    : smooth[smooth.length - 1];
+  const line = COLOUR[bandOf(tip)] || COLOUR.idle;
+
+  // Raw windows, behind the line: the evidence the average is built from.
+  ctx.fillStyle = "rgba(168,176,194,.38)";
+  for (let i = 0; i < scores.length; i++) {
+    ctx.beginPath();
+    ctx.arc(x(i), y(scores[i]), 1.4, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  /* Smooth curve through the averaged points, drawn as quadratic segments
+     between midpoints, so the trend reads as one continuous motion rather
+     than a chain of vertices. */
   const curve = () => {
-    ctx.moveTo(x(0), y(scores[0]));
-    if (scores.length < 3) {
-      for (let i = 1; i < scores.length; i++) ctx.lineTo(x(i), y(scores[i]));
+    ctx.moveTo(x(0), y(smooth[0]));
+    if (smooth.length < 3) {
+      for (let i = 1; i < smooth.length; i++) ctx.lineTo(x(i), y(smooth[i]));
       return;
     }
-    for (let i = 1; i < scores.length - 1; i++) {
+    for (let i = 1; i < smooth.length - 1; i++) {
       const mx = (x(i) + x(i + 1)) / 2;
-      const my = (y(scores[i]) + y(scores[i + 1])) / 2;
-      ctx.quadraticCurveTo(x(i), y(scores[i]), mx, my);
+      const my = (y(smooth[i]) + y(smooth[i + 1])) / 2;
+      ctx.quadraticCurveTo(x(i), y(smooth[i]), mx, my);
     }
-    const n2 = scores.length - 1;
-    ctx.quadraticCurveTo(x(n2), y(scores[n2]), x(n2), y(scores[n2]));
+    const n2 = smooth.length - 1;
+    ctx.quadraticCurveTo(x(n2), y(smooth[n2]), x(n2), y(smooth[n2]));
   };
 
   ctx.beginPath();
@@ -558,8 +620,10 @@ function drawChart(scores) {
   ctx.stroke();
   ctx.shadowBlur = 0;
 
-  const lx = x(scores.length - 1);
-  const ly = y(scores[scores.length - 1]);
+  // On the smoothed line, not the raw point, or the head of the series
+  // floats off the curve it is supposed to terminate.
+  const lx = x(smooth.length - 1);
+  const ly = y(smooth[smooth.length - 1]);
   ctx.fillStyle = line + "33";
   ctx.beginPath();
   ctx.arc(lx, ly, 7, 0, Math.PI * 2);
@@ -607,6 +671,87 @@ function initials(name) {
              .map((w) => w[0].toUpperCase()).join("") || "?";
 }
 
+/* Live row nodes, keyed by participant id.
+ *
+ * The list used to be torn down and rebuilt on every tick -- once a second
+ * from the roster timer and again on every scored window. That is what made
+ * the panel flicker: emptying the list collapses it to zero height, the canvas
+ * below reflows, fitCanvas sees new dimensions and resets canvas.width, which
+ * clears the graph and redraws it from scratch. Rows are now created once and
+ * mutated in place, so the layout under them never moves. */
+const rowNodes = new Map();
+
+function buildRow(p) {
+  const row = el("div", "sonix-person");
+  row.tabIndex = 0;
+  row.title = "Focus the verdict on this participant";
+
+  const av = el("div", "sonix-av");
+  const who = el("div", "sonix-who");
+  const nameEl = el("div", "sonix-pname");
+  const subEl = el("div", "sonix-psub");
+  who.append(nameEl, subEl);
+  const pip = el("span", "sonix-pip");
+  row.append(av, who, pip);
+
+  const pick = () => {
+    selectedId = selectedId === p.id ? null : p.id;
+    renderPeople();
+    if (lastState) draw(lastState);
+  };
+  row.addEventListener("click", pick);
+  row.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" || e.key === " ") { e.preventDefault(); pick(); }
+  });
+
+  const node = { row, av, nameEl, subEl, pip, avatarSrc: null, sig: null };
+  rowNodes.set(p.id, node);
+  return node;
+}
+
+function updateRow(node, p) {
+  // Everything that can change is folded into one signature, so an unchanged
+  // row costs a string compare and touches no DOM at all.
+  let tone = "idle", sub;
+  if (p.last === null || p.last === undefined) {
+    sub = p.speaking ? "speaking — listening" : "no attributed audio yet";
+  } else {
+    tone = bandOf(p.last);
+    const label = tone === "red" ? "Cloned"
+                : tone === "amber" ? "Uncertain" : "Authentic";
+    sub = `${label} · ${(p.last * 100).toFixed(0)}% · ${p.scores.length} win`;
+  }
+  const selected = p.id === selectedId;
+  const sig = [p.name, sub, tone, p.speaking, selected, p.avatar].join("\u0001");
+  if (sig === node.sig) return;
+  node.sig = sig;
+
+  if (node.nameEl.textContent !== p.name) node.nameEl.textContent = p.name;
+  node.subEl.textContent = sub;
+  node.subEl.className = `sonix-psub ${tone}`;
+  node.pip.className = `sonix-pip ${tone}` + (p.speaking ? " live" : "");
+  node.row.className = "sonix-person" + (selected ? " on" : "");
+  node.av.classList.toggle("talking", !!p.speaking);
+
+  // Only rewrite the avatar when the source actually changes -- reassigning
+  // img.src restarts the network fetch and blanks the image while it reloads.
+  if (p.avatar !== node.avatarSrc) {
+    node.avatarSrc = p.avatar;
+    node.av.textContent = "";
+    if (p.avatar) {
+      const img = document.createElement("img");
+      img.src = p.avatar;
+      img.alt = "";
+      node.av.appendChild(img);
+    } else {
+      node.av.textContent = initials(p.name);
+    }
+  } else if (!p.avatar) {
+    const ini = initials(p.name);
+    if (node.av.textContent !== ini) node.av.textContent = ini;
+  }
+}
+
 function renderPeople() {
   const list = panel.querySelector("#sonix-plist");
   const note = panel.querySelector("#sonix-pnote");
@@ -614,79 +759,52 @@ function renderPeople() {
   if (!list) return;
 
   const people = [...participants.values()];
-  count.textContent = people.length ? `${people.length}` : "—";
-
-  list.textContent = "";
+  const countText = people.length ? `${people.length}` : "—";
+  if (count.textContent !== countText) count.textContent = countText;
 
   if (!domReadable) {
-    note.textContent =
-      "Can't read Meet's participant list on this layout — scores below are " +
-      "for the whole call.";
-    note.className = "sonix-pnote warn";
+    if (rowNodes.size) { list.textContent = ""; rowNodes.clear(); }
+    const msg = "Can't read Meet's participant list on this layout — scores " +
+                "below are for the whole call.";
+    if (note.textContent !== msg) {
+      note.textContent = msg;
+      note.className = "sonix-pnote warn";
+    }
     return;
   }
 
+  // Drop rows for anyone who left.
+  for (const [id, node] of [...rowNodes]) {
+    if (!participants.has(id)) {
+      if (node.row.parentNode) node.row.parentNode.removeChild(node.row);
+      rowNodes.delete(id);
+    }
+  }
+
   for (const p of people) {
-    const row = el("div", "sonix-person" + (p.id === selectedId ? " on" : ""));
-    row.tabIndex = 0;
-    row.title = "Focus the verdict on this participant";
-
-    const av = el("div", "sonix-av");
-    if (p.avatar) {
-      const img = document.createElement("img");
-      img.src = p.avatar;
-      img.alt = "";
-      av.appendChild(img);
-    } else {
-      av.textContent = initials(p.name);
+    let node = rowNodes.get(p.id);
+    if (!node) {
+      node = buildRow(p);
+      list.appendChild(node.row);
     }
-    if (p.speaking) av.classList.add("talking");
-
-    const who = el("div", "sonix-who");
-    who.append(el("div", "sonix-pname", p.name));
-
-    // Per-person reading, only from windows Meet attributed to them alone.
-    let sub, tone = "idle";
-    if (p.last === null || p.last === undefined) {
-      sub = p.speaking ? "speaking — listening" : "no attributed audio yet";
-    } else {
-      tone = bandOf(p.last);
-      const label = tone === "red" ? "Cloned"
-                  : tone === "amber" ? "Uncertain" : "Authentic";
-      sub = `${label} · ${(p.last * 100).toFixed(0)}% · ${p.scores.length} win`;
-    }
-    const subEl = el("div", `sonix-psub ${tone}`, sub);
-    who.appendChild(subEl);
-
-    const pip = el("span", `sonix-pip ${tone}` + (p.speaking ? " live" : ""));
-
-    row.append(av, who, pip);
-    const pick = () => {
-      selectedId = selectedId === p.id ? null : p.id;
-      renderPeople();
-      if (lastState) draw(lastState);
-    };
-    row.addEventListener("click", pick);
-    row.addEventListener("keydown", (e) => {
-      if (e.key === "Enter" || e.key === " ") { e.preventDefault(); pick(); }
-    });
-    list.appendChild(row);
+    updateRow(node, p);
   }
 
+  // Written only when it actually changes: this sits directly above the
+  // canvas, and a text node that reflows every tick moves the graph.
+  let msg, cls = "sonix-pnote";
   if (!people.length) {
-    note.textContent = "No participant tiles visible yet.";
-    note.className = "sonix-pnote";
+    msg = "No participant tiles visible yet.";
   } else if (!speakerReadable) {
-    note.textContent =
-      "Meet's speaking indicator isn't readable here, so windows can't be " +
-      "attributed to a person. The verdict above is for the whole call.";
-    note.className = "sonix-pnote warn";
+    msg = "Meet's speaking indicator isn't readable here, so windows can't be " +
+          "attributed to a person. The verdict above is for the whole call.";
+    cls = "sonix-pnote warn";
   } else {
-    note.textContent =
-      "Attributed by Meet's active-speaker signal, only while one person " +
-      "has the floor. Not voice biometrics.";
-    note.className = "sonix-pnote";
+    msg = "Attributed by Meet's active-speaker signal, only while one person " +
+          "has the floor. Not voice biometrics.";
   }
+  if (note.textContent !== msg) note.textContent = msg;
+  if (note.className !== cls) note.className = cls;
 }
 
 let prevScoreCount = 0;
@@ -756,7 +874,7 @@ function draw(s) {
 
   // The graph stays the whole-call series when nothing is selected, and
   // switches to the target's attributed windows when something is.
-  drawChart(target ? target.scores : (s.scores || []));
+  drawChart(target ? target.scores : (s.scores || []), shown);
   renderPeople();
   syncModels(s);
 
@@ -808,7 +926,14 @@ chrome.runtime.onMessage.addListener((msg) => {
 });
 
 window.addEventListener("resize", () => {
-  if (panel && lastState) drawChart(lastState.scores || []);
+  // Redraw the series currently on screen -- the selected participant's, if
+  // one is selected, not always the whole call's.
+  if (panel && lastState) {
+    const t = selectedId ? participants.get(selectedId) : null;
+    drawChart(t ? t.scores : (lastState.scores || []),
+              t && t.last !== null && t.last !== undefined
+                ? t.last : lastState.lastScore);
+  }
 });
 
 /* Restore the operator's band thresholds before the first paint. */

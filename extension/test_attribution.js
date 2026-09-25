@@ -185,5 +185,67 @@ check("per-person history stays bounded", () => {
          `history grew to ${s.__eval("participants.get('a').scores.length")}`);
 });
 
-console.log(failures ? `\n${failures} check(s) FAILED` : "\nall attribution checks passed");
+
+/* ---- redraw guard ------------------------------------------------------ */
+/* The graph must not repaint when nothing about the picture has changed.
+   Every repaint is a full clear plus two shadow-blurred passes, and doing
+   that on every state push is what reads as flicker. */
+
+function fakeCanvas(calls) {
+  const ctx = new Proxy({}, {
+    get: (_t, k) => {
+      if (k === "createLinearGradient") return () => ({ addColorStop() {} });
+      if (k === "setTransform") return () => { };
+      if (k === "clearRect") return () => { calls.clears++; };
+      if (k === "measureText") return () => ({ width: 10 });
+      return () => { };
+    },
+    set: () => true,
+  });
+  return { clientWidth: 300, clientHeight: 146, width: 0, height: 0,
+           getContext: () => ctx };
+}
+
+check("graph skips the repaint when the data has not changed", () => {
+  const s = load([tile({ id: "a", name: "A", speaking: false })]);
+  const calls = { clears: 0 };
+  s.__fake = fakeCanvas(calls);
+  s.__eval("canvas = __fake");
+
+  const series = "[0.1,0.2,0.3,0.4,0.5]";
+  s.__eval(`drawChart(${series}, 0.5)`);
+  const afterFirst = calls.clears;
+  assert(afterFirst > 0, "first draw did not paint at all");
+
+  s.__eval(`drawChart(${series}, 0.5)`);
+  s.__eval(`drawChart(${series}, 0.5)`);
+  assert(calls.clears === afterFirst,
+         `repainted ${calls.clears - afterFirst} time(s) with unchanged data`);
+});
+
+check("graph DOES repaint when a new window arrives", () => {
+  const s = load([tile({ id: "a", name: "A", speaking: false })]);
+  const calls = { clears: 0 };
+  s.__fake = fakeCanvas(calls);
+  s.__eval("canvas = __fake");
+
+  s.__eval("drawChart([0.1,0.2,0.3], 0.3)");
+  const before = calls.clears;
+  s.__eval("drawChart([0.1,0.2,0.3,0.9], 0.9)");
+  assert(calls.clears > before, "new data did not trigger a repaint");
+});
+
+check("graph repaints when a threshold slider moves", () => {
+  const s = load([tile({ id: "a", name: "A", speaking: false })]);
+  const calls = { clears: 0 };
+  s.__fake = fakeCanvas(calls);
+  s.__eval("canvas = __fake");
+
+  s.__eval("drawChart([0.1,0.2,0.3], 0.3)");
+  const before = calls.clears;
+  s.__eval("RED_AT = 0.8; drawChart([0.1,0.2,0.3], 0.3)");
+  assert(calls.clears > before, "moving a threshold did not repaint the bands");
+});
+
+console.log(failures ? `\n${failures} check(s) FAILED` : "\nall checks passed");
 process.exit(failures ? 1 : 0);
