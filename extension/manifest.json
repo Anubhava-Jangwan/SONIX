@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "SONIX — Live Voice-Clone Detection",
-  "version": "0.1.0",
+  "version": "0.3.0",
   "description": "Monitors a Google Meet call for AI voice-clone impersonation and shows a live Green/Amber/Red risk band.",
   "minimum_chrome_version": "116",
 

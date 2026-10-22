@@ -5,21 +5,26 @@ from typing import Iterable
 
 import numpy as np
 
+# Presentation only - the band colours come from the shared palette so the
+# demo, the live dashboard and the extension cannot drift apart. theme imports
+# nothing, so this stays a leaf dependency.
+import theme
+
 BAND_INFO = {
     "GREEN": {
         "name": "GREEN — LOW",
         "action": "Proceed normally",
-        "border": "#16a34a",
+        "border": theme.GOOD,
     },
     "AMBER": {
         "name": "AMBER — ELEVATED",
         "action": "Call back on a number you already have",
-        "border": "#d97706",
+        "border": theme.WARN,
     },
     "RED": {
         "name": "RED — HIGH",
         "action": "Second-level approval required",
-        "border": "#dc2626",
+        "border": theme.CRIT,
     },
 }
 

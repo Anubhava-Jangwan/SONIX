@@ -33,6 +33,45 @@ let stream = null;
 let callId = null;
 let serverBase = "http://localhost:8000";
 
+// Remembered so a call can be restarted on the EXISTING socket without going
+// back through chrome.tabCapture -- see restartCall().
+let lastCaller = "google-meet";
+let lastModel;
+
+// Live input level, measured here rather than asked of the server.
+// The server only reports whether a 4 s window cleared the silence gate, which
+// arrives seconds late and says nothing while a window is filling. An
+// AnalyserNode on the same graph that feeds the socket is the real signal, at
+// no cost -- and it answers the only question that matters when nothing is
+// being scored: is any audio arriving at all?
+let analyser = null;
+let levelTimer = null;
+
+function startLevelMeter(source) {
+  analyser = ctx.createAnalyser();
+  analyser.fftSize = 1024;
+  analyser.smoothingTimeConstant = 0.55;
+  source.connect(analyser);
+
+  const buf = new Float32Array(analyser.fftSize);
+  clearInterval(levelTimer);
+  // 20 Hz: fast enough that the panel's own easing looks continuous, slow
+  // enough not to flood the message port.
+  levelTimer = setInterval(() => {
+    if (!analyser) return;
+    analyser.getFloatTimeDomainData(buf);
+    let sum = 0;
+    let peak = 0;
+    for (let i = 0; i < buf.length; i++) {
+      const v = buf[i];
+      sum += v * v;
+      const a = v < 0 ? -v : v;
+      if (a > peak) peak = a;
+    }
+    toBackground({ type: "level", rms: Math.sqrt(sum / buf.length), peak });
+  }, 50);
+}
+
 const toBackground = (msg) =>
   chrome.runtime.sendMessage({ target: "background", ...msg });
 
@@ -45,8 +84,10 @@ function floatToPCM16(f32) {
   return out;
 }
 
-async function start({ streamId, serverUrl, caller }) {
+async function start({ streamId, serverUrl, caller, model }) {
   serverBase = (serverUrl || serverBase).replace(/\/+$/, "");
+  lastCaller = caller || "google-meet";
+  lastModel = model || undefined;
   const wsUrl = serverBase.replace(/^http/, "ws") + "/ws";
 
   try {
@@ -65,6 +106,7 @@ async function start({ streamId, serverUrl, caller }) {
   ctx = new AudioContext();                       // native rate, see note 2
   const source = ctx.createMediaStreamSource(stream);
   source.connect(ctx.destination);                // note 1 — keep it audible
+  startLevelMeter(source);
 
   try {
     await ctx.audioWorklet.addModule(chrome.runtime.getURL("worklet.js"));
@@ -83,6 +125,7 @@ async function start({ streamId, serverUrl, caller }) {
         type: "start_mic_call",
         sample_rate: ctx.sampleRate,
         caller: caller || "google-meet",
+        model: model || undefined,
       })
     );
     // scoring_available only appears on the telemetry endpoint
@@ -115,6 +158,9 @@ async function start({ streamId, serverUrl, caller }) {
       const d = m.data[callId];
       toBackground({ type: "score", score: d.score, windows: d.window_idx + 1 });
     }
+    if (m.type === "model_changed" && m.call_id === callId) {
+      toBackground({ type: "model_changed", model: m.model });
+    }
     if (m.type === "error") {
       toBackground({ type: "error", message: m.message });
     }
@@ -142,6 +188,9 @@ function stop() {
       ws.close();
     }
   } catch {}
+  clearInterval(levelTimer);
+  levelTimer = null;
+  analyser = null;
   if (node) node.disconnect();
   if (stream) stream.getTracks().forEach((t) => t.stop());
   if (ctx) ctx.close();
@@ -149,8 +198,56 @@ function stop() {
   callId = null;
 }
 
+/* Swap the head scoring THIS call, without touching the audio path.
+ *
+ * Deliberately not a stop()/start() pair: restarting would mint a new call_id
+ * and send the operator back through the consent gate, and the panel's graph
+ * would lose the call it is graphing. The server re-points the existing
+ * session instead -- see SonicServer._set_call_model.
+ */
+function setModel(model) {
+  if (!ws || ws.readyState !== WebSocket.OPEN || !callId) return;
+  lastModel = model;
+  ws.send(JSON.stringify({ type: "set_model", call_id: callId, model }));
+}
+
+/* End the current call and open a new one on the SAME socket, to mint a fresh
+ * pairing code.
+ *
+ * Deliberately not a stop()/start() pair. Starting over would need a new
+ * stream id from chrome.tabCapture.getMediaStreamId(), and that call requires
+ * a user gesture in the EXTENSION's own context -- user activation does not
+ * survive a sendMessage hop from a content script, so a button in the in-page
+ * panel could not satisfy it. It would fail with "Extension has not been
+ * invoked for the current page".
+ *
+ * None of that is necessary: the tab capture, the AudioContext and the
+ * worklet are all still live and still feeding this socket. Only the server
+ * side needs recycling, and the server mints a pairing code per call.
+ */
+function restartCall() {
+  if (!ws || ws.readyState !== WebSocket.OPEN) {
+    toBackground({
+      type: "error",
+      message: "Not connected to the SONIX server — press Stop, then start " +
+               "monitoring again from the toolbar popup.",
+    });
+    return;
+  }
+  if (callId) ws.send(JSON.stringify({ type: "end_call", call_id: callId }));
+  callId = null;
+  ws.send(JSON.stringify({
+    type: "start_mic_call",
+    sample_rate: ctx ? ctx.sampleRate : 48000,
+    caller: lastCaller,
+    model: lastModel,
+  }));
+}
+
 chrome.runtime.onMessage.addListener((msg) => {
   if (msg.target !== "offscreen") return;
   if (msg.type === "start") start(msg);
   if (msg.type === "stop") stop();
+  if (msg.type === "set_model") setModel(msg.model);
+  if (msg.type === "restart") restartCall();
 });

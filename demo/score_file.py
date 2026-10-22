@@ -42,6 +42,7 @@ WIN = 64000          # 4.0 s
 HOP = 8000           # 0.5 s
 
 DEFAULT_CKPT = "outputs/models/head.pt"
+MODEL_DIRS = ("models", "outputs/models")
 
 # Shared frozen front-end (loaded once) + a cache of small heads keyed by checkpoint.
 _FE = {"loaded": False}
@@ -88,33 +89,43 @@ def configure(ckpt_path=DEFAULT_CKPT, model_name=None, device=None):
         _STATE["device_override"] = device
 
 
+def _candidate_roots():
+    bases = [Path.cwd(), Path(__file__).resolve().parent]
+    seen = set()
+    for base in bases:
+        for d in [base, *base.parents]:
+            resolved = d.resolve()
+            if resolved not in seen:
+                seen.add(resolved)
+                yield d
+
+
 def resolve_ckpt(ckpt_path=None) -> str:
     """Return an existing checkpoint path. Tries the path as-is, then searches
-    upward from the current directory and this file's directory for
-    outputs/models/<name>. Raises FileNotFoundError if nothing matches."""
+    upward for models/<name> and outputs/models/<name>. Raises FileNotFoundError
+    if nothing matches."""
     ckpt_path = ckpt_path or _STATE.get("default_ckpt", DEFAULT_CKPT)
     p = Path(ckpt_path)
     if p.is_file():
         return str(p.resolve())
 
     name = p.name
-    bases = [Path.cwd(), Path(__file__).resolve().parent]
     tried = []
-    for base in bases:
-        for d in [base, *base.parents]:
-            cand = d / "outputs" / "models" / name
+    for root in _candidate_roots():
+        for model_dir in MODEL_DIRS:
+            cand = root / model_dir / name
             tried.append(cand)
             if cand.is_file():
                 return str(cand.resolve())
     # last resort: the raw relative path joined onto each base
-    for base in bases:
-        cand = base / ckpt_path
+    for root in _candidate_roots():
+        cand = root / ckpt_path
         if cand.is_file():
             return str(cand.resolve())
 
     raise FileNotFoundError(
         f"checkpoint not found: {ckpt_path}  "
-        f"(also searched upward for outputs/models/{name})"
+        f"(also searched upward for models/{name} and outputs/models/{name})"
     )
 
 
@@ -125,6 +136,41 @@ def checkpoint_available(ckpt_path=None) -> bool:
         return True
     except FileNotFoundError:
         return False
+
+
+def discover_checkpoints() -> list[dict]:
+    """Find checkpoint heads in models/ and outputs/models/.
+
+    Returns dictionaries with stable IDs for UI/API use. This is a cheap file
+    scan; it does not import torch or load model weights.
+    """
+    found = {}
+    for root in _candidate_roots():
+        for model_dir in MODEL_DIRS:
+            folder = root / model_dir
+            if not folder.is_dir():
+                continue
+            for path in sorted(folder.glob("*.pt")):
+                resolved = str(path.resolve())
+                found.setdefault(resolved, {
+                    "id": path.stem,
+                    "label": label_for_checkpoint(path),
+                    "path": resolved,
+                    "filename": path.name,
+                })
+    return sorted(found.values(), key=lambda item: item["label"].lower())
+
+
+def label_for_checkpoint(path) -> str:
+    name = Path(path).stem
+    known = {
+        "head": "Baseline",
+        "head_aug": "Augmented",
+        "head_robust": "Robust",
+    }
+    if name in known:
+        return known[name]
+    return name.replace("head_", "").replace("_", " ").strip().title() or name
 
 
 def _load_frontend():

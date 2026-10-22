@@ -1,0 +1,5 @@
+{
+  "dependencies": {
+    "@motion.page/claude-plugin": "^1.0.5"
+  }
+}
