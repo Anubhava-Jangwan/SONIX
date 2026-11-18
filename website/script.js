@@ -10,11 +10,18 @@
 (() => {
   "use strict";
 
-  // Same origin when served by realtime/server.py; falls back to the documented
-  // port when the file is opened directly.
-  const SERVER = location.protocol.startsWith("http")
-    ? location.origin.replace(/\/$/, "")
-    : "http://localhost:8000";
+  // Where the detection backend lives. Set BACKEND when this page is hosted
+  // apart from the server — e.g. the page on Vercel, realtime/server.py on a
+  // Hugging Face Space (see deploy/hf-space/). Leave it "" when the server
+  // serves this page itself, which is the local and Space case.
+  // ?backend=https://host overrides it for a one-off test without a redeploy.
+  // Whatever you point at must list this page's origin in
+  // SONIX_ALLOWED_ORIGINS, or /ws and /api/score-file answer 403 (server.py:41).
+  const BACKEND = "";
+  const _override = new URLSearchParams(location.search).get("backend");
+  const SERVER = (_override || BACKEND || (location.protocol.startsWith("http")
+    ? location.origin
+    : "http://localhost:8000")).replace(/\/$/, "");
   const WS_URL = SERVER.replace(/^http/, "ws") + "/ws";
   const AMBER_AT = 0.35, RED_AT = 0.65; // canonical thresholds — see realtime/miccapture.py
 
