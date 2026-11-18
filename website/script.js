@@ -14,11 +14,18 @@
   // apart from the server — e.g. the page on Vercel, realtime/server.py on a
   // Hugging Face Space (see deploy/hf-space/). Leave it "" when the server
   // serves this page itself, which is the local and Space case.
-  // ?backend=https://host overrides it for a one-off test without a redeploy.
   // Whatever you point at must list this page's origin in
   // SONIX_ALLOWED_ORIGINS, or /ws and /api/score-file answer 403 (server.py:41).
+  //
+  // ?backend=https://host overrides it, but ONLY when this page is itself on
+  // localhost. On a public deployment the override is ignored: a link like
+  // ?backend=https://attacker.example would otherwise ship the visitor's
+  // uploaded clip and live mic audio straight to whoever wrote the link.
   const BACKEND = "";
-  const _override = new URLSearchParams(location.search).get("backend");
+  const _local = ["localhost", "127.0.0.1", "[::1]"].includes(location.hostname);
+  const _override = _local
+    ? new URLSearchParams(location.search).get("backend")
+    : null;
   const SERVER = (_override || BACKEND || (location.protocol.startsWith("http")
     ? location.origin
     : "http://localhost:8000")).replace(/\/$/, "");
